@@ -208,6 +208,7 @@ def brew_environment() -> dict[str, str]:
         HOMEBREW_NO_ANALYTICS="1",
         HOMEBREW_NO_ENV_HINTS="1",
         HOMEBREW_CURL_RETRIES="4",
+        BUNDLE_RETRY="4",
     )
     return env
 
@@ -269,6 +270,7 @@ def brew(
         from .network import retry
 
         env["HOMEBREW_CURL_RETRIES"] = "0"
+        env["BUNDLE_RETRY"] = "0"
         return retry(lambda: run(["brew", *args], cwd=cwd, capture=capture, env=env))
     return run(["brew", *args], cwd=cwd, capture=capture, env=env)
 

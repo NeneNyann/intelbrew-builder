@@ -1,3 +1,4 @@
+require "global"
 require "json"
 require "fileutils"
 require "find"
@@ -225,5 +226,6 @@ if ARGV.first == "install"
   end
 else
   Formula.prepend(LLVMCheckpoint::FormulaMethods)
-  load HOMEBREW_LIBRARY_PATH/"build.rb"
+  $PROGRAM_NAME = (HOMEBREW_LIBRARY_PATH/"build.rb").to_s
+  load $PROGRAM_NAME
 end

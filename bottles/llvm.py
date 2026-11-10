@@ -337,6 +337,10 @@ def build(plan: list[dict]) -> bool:
     finally:
         if process.poll() is None:
             stop(process, groups | process_groups(process.pid))
+    require(
+        process.returncode == 0 or timed_out,
+        f"LLVM source build failed (exit {process.returncode})",
+    )
     journal = read_json(journal_path)
     if timed_out:
         journal["commands"] = journal["commands"][:completed_before_interrupt]

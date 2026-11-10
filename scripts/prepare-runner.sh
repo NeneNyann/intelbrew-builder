@@ -45,7 +45,10 @@ PY
   export HOMEBREW_NO_ANALYTICS=1
   export HOMEBREW_NO_INSTALL_CLEANUP=1
   export HOMEBREW_CURL_RETRIES=4
-  export BUNDLE_RETRY=4
+}
+
+network_brew() {
+  BUNDLE_RETRY=0 /usr/bin/python3 -u -m bottles.network brew "$@"
 }
 
 check_homebrew() {
@@ -81,7 +84,7 @@ pin_homebrew() {
 isolate_preinstalled_kegs() {
   local directory
 
-  brew ruby -e '
+  network_brew ruby -e '
     require "keg"
     HOMEBREW_CELLAR.glob("*/*/INSTALL_RECEIPT.json").each do |receipt|
       Keg.new(receipt.dirname).unlink
@@ -142,8 +145,8 @@ verify_checkouts() {
 
 prepare_commands() {
   echo /usr/bin >> "${GITHUB_PATH:?}"
-  brew install-bundler-gems --add-groups=bottle,formula_test
-  brew config
+  network_brew install-bundler-gems --add-groups=bottle,formula_test
+  network_brew config
 
   echo "Runner setup complete. Preinstalled Homebrew files were moved to $backup"
 }

@@ -77,6 +77,7 @@ def transient(error: Exception) -> bool:
             r"|temporary failure in name resolution|name or service not known|nodename nor servname"
             r"|connection (?:was )?(?:reset|refused|aborted)|connection closed unexpectedly"
             r"|broken pipe|timed? out|timeout|unexpected (?:disconnect|eof)|\beof\b"
+            r"|execution expired|failed to open tcp connection"
             r"|remote end hung up|gnutls_recv|tls handshake|tls connection.*terminated"
             r"|curl[: ]+\(?\s*(?:5|6|7|18|28|35|52|55|56|92)\b|\beconnreset\b",
             message,
