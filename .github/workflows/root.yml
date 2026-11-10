@@ -1,0 +1,176 @@
+name: Build formula bottles
+
+on:
+  workflow_call:
+    inputs:
+      root:
+        required: true
+        type: string
+      brew_commit:
+        required: true
+        type: string
+      core_commit:
+        required: true
+        type: string
+      llvm_checkpoint:
+        default: ""
+        type: string
+      llvm_checkpoint_sha256:
+        default: ""
+        type: string
+    secrets:
+      CORE_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: root-${{ github.ref }}-${{ inputs.root }}
+  cancel-in-progress: false
+
+env:
+  BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+  BREW_COMMIT: ${{ inputs.brew_commit }}
+  CORE_COMMIT: ${{ inputs.core_commit }}
+  ROOT_FORMULA: ${{ inputs.root }}
+  LLVM_CHECKPOINT: ${{ inputs.llvm_checkpoint }}
+  LLVM_CHECKPOINT_SHA256: ${{ inputs.llvm_checkpoint_sha256 }}
+  HOMEBREW_NO_INSTALL_FROM_API: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+jobs:
+  build:
+    name: build (${{ inputs.root }})
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    outputs:
+      has_work: ${{ steps.build.outputs.has_work }}
+      tag: ${{ steps.transfer.outputs.tag }}
+      manifest_sha256: ${{ steps.transfer.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set LLVM time budget
+        if: inputs.root == 'llvm'
+        run: /usr/bin/python3 -m bottles.llvm clock
+      - name: Prepare Homebrew at the selected commits
+        run: bash scripts/prepare-runner.sh
+      - name: Restore LLVM checkpoint
+        if: inputs.root == 'llvm' && inputs.llvm_checkpoint != ''
+        timeout-minutes: 90
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          /usr/bin/python3 -m bottles.llvm restore
+          --directory "$RUNNER_TEMP/llvm-restore"
+      - name: Build formula using published dependency bottles
+        id: build
+        timeout-minutes: 330
+        run: >-
+          /usr/bin/python3 -m bottles.pipeline build
+          --root "$ROOT_FORMULA"
+          --output "$RUNNER_TEMP/candidate"
+      - name: Upload LLVM checkpoint
+        if: steps.build.outputs.checkpoint == 'true'
+        timeout-minutes: 30
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          /usr/bin/python3 -m bottles.llvm upload
+          --directory "$RUNNER_TEMP/llvm-checkpoint"
+      - name: Upload candidate release
+        if: steps.build.outputs.has_work == 'true'
+        id: transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          /usr/bin/python3 -m bottles.transfer upload
+          --directory "$RUNNER_TEMP/candidate"
+
+  verify:
+    name: verify (${{ inputs.root }})
+    needs: build
+    if: needs.build.outputs.has_work == 'true'
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.verify.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download candidate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRANSFER_TAG: ${{ needs.build.outputs.tag }}
+          CANDIDATE_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+        run: >-
+          /usr/bin/python3 -m bottles.transfer download
+          --directory "$RUNNER_TEMP/candidate"
+      - name: Prepare a clean Homebrew environment
+        run: bash scripts/prepare-runner.sh
+      - name: Install and verify candidate bottles
+        id: verify
+        run: >-
+          /usr/bin/python3 -m bottles.pipeline verify
+          --candidate "$RUNNER_TEMP/candidate"
+          --output "$RUNNER_TEMP/verified"
+
+  publish:
+    name: publish (${{ inputs.root }})
+    needs: [build, verify]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download candidate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRANSFER_TAG: ${{ needs.build.outputs.tag }}
+          CANDIDATE_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+        run: >-
+          python3 -m bottles.transfer download
+          --directory "$RUNNER_TEMP/candidate"
+      - name: Check independent verification digest
+        env:
+          VERIFIED_SHA256: ${{ needs.verify.outputs.manifest_sha256 }}
+        run: python3 -m bottles.pipeline seal --candidate "$RUNNER_TEMP/candidate"
+      - name: Validate and stage release assets
+        run: |
+          python3 -m bottles.pipeline validate --candidate "$RUNNER_TEMP/candidate"
+          python3 -m bottles.publish prepare \
+            --candidate "$RUNNER_TEMP/candidate" \
+            --output "$RUNNER_TEMP/releases"
+      - name: Create release attestations
+        uses: actions/attest@v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/releases/**/*.tar.gz
+            ${{ runner.temp }}/releases/**/*.json
+            ${{ runner.temp }}/releases/**/SHA256SUMS
+      - name: Publish releases and merge Core metadata PR
+        env:
+          GH_TOKEN: ${{ secrets.CORE_TOKEN }}
+          ATTESTATION_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -m bottles.publish publish
+          --candidate "$RUNNER_TEMP/candidate"
+          --output "$RUNNER_TEMP/releases"

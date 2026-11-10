@@ -1,0 +1,160 @@
+name: Build bottle wave
+run-name: Bottle wave ${{ inputs.previous || github.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      previous:
+        description: Previous wave release
+        required: true
+        type: string
+      digest:
+        description: Previous wave SHA-256
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      formulae:
+        required: true
+        type: string
+      brew_commit:
+        required: true
+        type: string
+      core_commit:
+        required: true
+        type: string
+    secrets:
+      CORE_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bottle-waves-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  select:
+    name: Plan bottle wave
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    outputs:
+      formulae: ${{ steps.select.outputs.formulae }}
+      has_work: ${{ steps.select.outputs.has_work }}
+      brew_commit: ${{ steps.resolve.outputs.brew_commit }}
+      core_commit: ${{ steps.resolve.outputs.core_commit }}
+      plan_tag: ${{ steps.upload.outputs.plan_tag }}
+      plan_sha256: ${{ steps.upload.outputs.plan_sha256 }}
+      llvm_checkpoint: ${{ steps.resolve.outputs.llvm_checkpoint }}
+      llvm_checkpoint_sha256: ${{ steps.resolve.outputs.llvm_checkpoint_sha256 }}
+      llvm_core_commit: ${{ steps.resolve.outputs.llvm_core_commit }}
+    env:
+      BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Resolve wave state and commits
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WAVE_PREVIOUS: ${{ inputs.previous }}
+          WAVE_DIGEST: ${{ inputs.digest }}
+          WAVE_ROOTS: ${{ inputs.formulae }}
+          WAVE_BREW_COMMIT: ${{ inputs.brew_commit }}
+          WAVE_CORE_COMMIT: ${{ inputs.core_commit }}
+        run: /usr/bin/python3 -m bottles.waves resolve --state "$RUNNER_TEMP/wave.json"
+      - name: Prepare Homebrew at the selected commits
+        run: bash scripts/prepare-runner.sh
+      - name: Select dependency-ready formulae
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -u -m bottles.schedule --state "$RUNNER_TEMP/wave.json"
+      - name: Upload wave state
+        id: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -m bottles.waves upload --state "$RUNNER_TEMP/wave.json"
+
+  pipeline:
+    needs: select
+    if: needs.select.outputs.has_work == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        root: ${{ fromJSON(needs.select.outputs.formulae) }}
+    uses: ./.github/workflows/root.yml
+    with:
+      root: ${{ matrix.root }}
+      brew_commit: ${{ needs.select.outputs.brew_commit }}
+      core_commit: >-
+        ${{ matrix.root == 'llvm' && needs.select.outputs.llvm_core_commit
+        || needs.select.outputs.core_commit }}
+      llvm_checkpoint: ${{ matrix.root == 'llvm' && needs.select.outputs.llvm_checkpoint || '' }}
+      llvm_checkpoint_sha256: >-
+        ${{ matrix.root == 'llvm' && needs.select.outputs.llvm_checkpoint_sha256 || '' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+
+  finish:
+    name: Continue bottle session
+    needs: [select, pipeline]
+    if: ${{ !cancelled() && needs.select.result == 'success' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    env:
+      BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+      GH_TOKEN: ${{ github.token }}
+      WAVE_PLAN: ${{ needs.select.outputs.plan_tag }}
+      WAVE_DIGEST: ${{ needs.select.outputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Report results and schedule the next wave
+        run: python3 -m bottles.waves finish
+
+  cleanup:
+    name: Clean temporary releases
+    needs: [select, pipeline, finish]
+    if: ${{ !cancelled() && needs.select.result == 'success' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Delete temporary candidates
+        run: python3 -m bottles.transfer cleanup
+      - name: Delete temporary LLVM checkpoints
+        env:
+          LLVM_CHECKPOINT: ${{ needs.select.outputs.llvm_checkpoint }}
+          LLVM_CHECKPOINT_SHA256: ${{ needs.select.outputs.llvm_checkpoint_sha256 }}
+        run: python3 -m bottles.llvm cleanup

@@ -1,0 +1,27 @@
+name: Check syntax
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  data:
+    name: Workflow and script syntax
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check workflow, Ruby, and shell syntax
+        run: |
+          for script in scripts/*.rb; do
+            ruby -c "$script"
+          done
+          bash -n scripts/prepare-runner.sh
+          ruby -ryaml -e 'Dir[".github/workflows/*.yml"].each { |path| YAML.parse_file(path) }'

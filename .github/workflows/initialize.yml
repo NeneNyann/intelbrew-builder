@@ -1,0 +1,54 @@
+name: Initialize Core
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      brew_commit:
+        required: true
+        type: string
+      core_commit:
+        required: true
+        type: string
+    secrets:
+      CORE_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-initialization
+  cancel-in-progress: false
+
+jobs:
+  initialize:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    env:
+      BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select initialization commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_BREW_COMMIT: ${{ inputs.brew_commit }}
+          REQUESTED_CORE_COMMIT: ${{ inputs.core_commit }}
+        run: python3 -m bottles.resolve
+      - id: prepare
+        name: Check Core and prepare official history if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m bottles.initialize prepare --workspace "$RUNNER_TEMP/core-seed.git"
+      - name: Initialize the empty Core repository
+        if: steps.prepare.outputs.needs_seed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CORE_TOKEN }}
+        run: python3 -m bottles.initialize publish --workspace "$RUNNER_TEMP/core-seed.git"
+      - name: Update Core README
+        env:
+          GH_TOKEN: ${{ secrets.CORE_TOKEN }}
+        run: python3 -m bottles.initialize readme

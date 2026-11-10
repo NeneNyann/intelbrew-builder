@@ -1,0 +1,59 @@
+name: Sync Core
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      brew_commit:
+        required: true
+        type: string
+      core_commit:
+        required: true
+        type: string
+    secrets:
+      CORE_TOKEN:
+        required: true
+    outputs:
+      core_commit:
+        value: ${{ jobs.sync.outputs.core_commit }}
+      stale_formulae:
+        value: ${{ jobs.sync.outputs.stale_formulae }}
+
+permissions:
+  contents: read
+  attestations: read
+
+concurrency:
+  group: core-synchronization
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    outputs:
+      core_commit: ${{ steps.publish.outputs.core_commit }}
+      stale_formulae: ${{ steps.publish.outputs.stale_formulae }}
+    env:
+      BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+      REQUESTED_BREW_COMMIT: ${{ inputs.brew_commit }}
+      REQUESTED_CORE_COMMIT: ${{ inputs.core_commit }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select source commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m bottles.resolve
+      - name: Prepare upstream changes and bottle metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION_TOKEN: ${{ github.token }}
+        run: python3 -m bottles.sync prepare --workspace "$RUNNER_TEMP/core-sync.git"
+      - id: publish
+        name: Update Core
+        env:
+          GH_TOKEN: ${{ secrets.CORE_TOKEN }}
+        run: python3 -m bottles.sync publish --workspace "$RUNNER_TEMP/core-sync.git"

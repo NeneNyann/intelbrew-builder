@@ -1,0 +1,107 @@
+name: Build and publish bottles
+
+on:
+  workflow_dispatch:
+    inputs:
+      formulae:
+        description: Formula names or cask:name separated by commas, or all for every target
+        required: false
+        default: all
+        type: string
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bottles-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Select source commits
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.snapshot.outputs.enabled }}
+      brew_commit: ${{ steps.snapshot.outputs.brew_commit }}
+      core_commit: ${{ steps.snapshot.outputs.core_commit }}
+    env:
+      BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Homebrew and Core commits
+        id: snapshot
+        run: python3 -m bottles.resolve
+
+  initialize:
+    needs: snapshot
+    if: needs.snapshot.outputs.enabled == 'true'
+    uses: ./.github/workflows/initialize.yml
+    with:
+      brew_commit: ${{ needs.snapshot.outputs.brew_commit }}
+      core_commit: ${{ needs.snapshot.outputs.core_commit }}
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+
+  sync:
+    needs: [snapshot, initialize]
+    if: needs.snapshot.outputs.enabled == 'true'
+    uses: ./.github/workflows/sync.yml
+    with:
+      brew_commit: ${{ needs.snapshot.outputs.brew_commit }}
+      core_commit: ${{ needs.snapshot.outputs.core_commit }}
+    permissions:
+      contents: read
+      attestations: read
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+
+  select:
+    name: Select formulae
+    needs: [snapshot, sync]
+    if: needs.snapshot.outputs.enabled == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      formulae: ${{ steps.select.outputs.formulae }}
+      has_work: ${{ steps.select.outputs.has_work }}
+    env:
+      BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+      BREW_COMMIT: ${{ needs.snapshot.outputs.brew_commit }}
+      CORE_COMMIT: ${{ needs.sync.outputs.core_commit }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Select requested Core formulae
+        id: select
+        env:
+          REQUESTED_FORMULAE: ${{ inputs.formulae || 'all' }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -u -m bottles.schedule
+
+  pipeline:
+    needs: [snapshot, sync, select]
+    if: needs.select.outputs.has_work == 'true'
+    uses: ./.github/workflows/waves.yml
+    with:
+      formulae: ${{ needs.select.outputs.formulae }}
+      brew_commit: ${{ needs.snapshot.outputs.brew_commit }}
+      core_commit: ${{ needs.sync.outputs.core_commit }}
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+      attestations: write
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
