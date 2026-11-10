@@ -12,12 +12,6 @@ on:
       core_commit:
         required: true
         type: string
-      llvm_checkpoint:
-        default: ""
-        type: string
-      llvm_checkpoint_sha256:
-        default: ""
-        type: string
     secrets:
       CORE_TOKEN:
         required: true
@@ -34,8 +28,6 @@ env:
   BREW_COMMIT: ${{ inputs.brew_commit }}
   CORE_COMMIT: ${{ inputs.core_commit }}
   ROOT_FORMULA: ${{ inputs.root }}
-  LLVM_CHECKPOINT: ${{ inputs.llvm_checkpoint }}
-  LLVM_CHECKPOINT_SHA256: ${{ inputs.llvm_checkpoint_sha256 }}
   HOMEBREW_NO_INSTALL_FROM_API: "1"
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -56,19 +48,8 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Set LLVM time budget
-        if: inputs.root == 'llvm'
-        run: /usr/bin/python3 -m bottles.llvm clock
       - name: Prepare Homebrew at the selected commits
         run: bash scripts/prepare-runner.sh
-      - name: Restore LLVM checkpoint
-        if: inputs.root == 'llvm' && inputs.llvm_checkpoint != ''
-        timeout-minutes: 90
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          /usr/bin/python3 -m bottles.llvm restore
-          --directory "$RUNNER_TEMP/llvm-restore"
       - name: Build formula using published dependency bottles
         id: build
         timeout-minutes: 330
@@ -76,14 +57,6 @@ jobs:
           /usr/bin/python3 -m bottles.pipeline build
           --root "$ROOT_FORMULA"
           --output "$RUNNER_TEMP/candidate"
-      - name: Upload LLVM checkpoint
-        if: steps.build.outputs.checkpoint == 'true'
-        timeout-minutes: 30
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          /usr/bin/python3 -m bottles.llvm upload
-          --directory "$RUNNER_TEMP/llvm-checkpoint"
       - name: Upload candidate release
         if: steps.build.outputs.has_work == 'true'
         id: transfer

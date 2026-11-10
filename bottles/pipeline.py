@@ -32,6 +32,7 @@ from .common import (
     write_json,
 )
 from .metadata import bottle_json, recipe_sha, release_tag, release_url
+from .recipes import build_profile, build_recipe, patched_recipe, recipe_patch
 from .sources import identity as source_identity
 from .sources import retain as retain_git
 
@@ -145,8 +146,14 @@ def source_bundle(meta: dict, output: Path, cfg: dict) -> Path:
                     **source_identity(source),
                 }
             )
+        original = Path(meta["path"]).read_bytes()
+        patch_instruction = (
+            "Apply build.patch in the Core checkout before building.\n"
+            if build_profile(meta["name"])
+            else ""
+        )
         materials = {
-            "recipe.rb": Path(meta["path"]).read_bytes(),
+            "recipe.rb": original,
             "sources.json": json.dumps(index, indent=2).encode(),
             "Homebrew-LICENSE.txt": Path(
                 "/usr/local/Homebrew/Library/Taps/homebrew/homebrew-core/LICENSE.txt"
@@ -156,6 +163,7 @@ def source_bundle(meta: dict, output: Path, cfg: dict) -> Path:
                 f"Core snapshot: {cfg['core_repository']}@{cfg['core_commit']}\n"
                 f"Platform: macOS 15 Intel (x86_64), prefix /usr/local\n"
                 f"Formula: {meta['name']} {meta['pkg_version']}\n\n"
+                f"{patch_instruction}"
                 "Build from the recorded snapshots with "
                 f"brew install --build-bottle --formula homebrew/core/{meta['name']}.\n"
                 "Create the bottle with brew bottle --json --no-rebuild "
@@ -165,6 +173,8 @@ def source_bundle(meta: dict, output: Path, cfg: dict) -> Path:
                 "downloaded archives are retained unchanged.\n"
             ).encode(),
         }
+        if build_profile(meta["name"]):
+            materials["build.patch"] = recipe_patch(meta["name"], original)
         for member_name, data in materials.items():
             member = tarfile.TarInfo(member_name)
             member.size, member.mode = len(data), 0o644
@@ -241,17 +251,11 @@ def build(root: str, output: Path) -> None:
             "brew_commit": cfg["brew_commit"],
             "core_commit": cfg["core_commit"],
             "plan": ordered,
+            **build_profile(formula),
         }
         tag = release_tag(meta, inputs)
         root_url = release_url(cfg["core_repository"], tag)
-        if formula == "llvm":
-            from .llvm import build as build_llvm
-
-            if not build_llvm(ordered):
-                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-                    stream.write("has_work=false\ncheckpoint=true\n")
-                return
-        else:
+        with patched_recipe(meta):
             brew(
                 "install", "--build-bottle", "--formula", "homebrew/core/" + formula, capture=False
             )
@@ -293,6 +297,10 @@ def build(root: str, output: Path) -> None:
                 sha256=digest(archives[0]),
                 size=archives[0].stat().st_size,
             )
+            if build_profile(formula):
+                record["build_recipe_sha256"] = recipe_sha(
+                    build_recipe(formula, Path(meta["path"]).read_bytes())
+                )
             data = json.loads(json_files[0].read_text())
             details = bottle_json(data, record)
             require(archives[0].name == details["local_filename"], "Unexpected local bottle name")

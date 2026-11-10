@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from .common import MAX_JSON, config, digest, filename, name, read_json, require, sha
 from .metadata import bottle_json, recipe_sha, release_tag, release_url
+from .recipes import build_profile, build_recipe, recipe_patch
 from .sources import git_url, source_path
 
 MANIFEST_KEYS = {
@@ -122,7 +123,8 @@ def check_bottle(path: Path, record: dict) -> None:
                 found[normalized] = _small_member(archive, member)
     require(set(found) == {recipe_path, receipt_path}, "Bottle recipe/receipt missing")
     require(
-        recipe_sha(found[recipe_path]) == record["recipe_sha256"],
+        recipe_sha(found[recipe_path])
+        == record.get("build_recipe_sha256", record["recipe_sha256"]),
         "Bottle recipe differs from build recipe",
     )
     receipt = json.loads(found[receipt_path])
@@ -160,8 +162,9 @@ def check_sources(path: Path, record: dict) -> None:
             "Source evidence missing",
         )
         recipe_member = archive.getmember("recipe.rb")
+        original = _small_member(archive, recipe_member)
         require(
-            recipe_sha(_small_member(archive, recipe_member)) == record["recipe_sha256"],
+            recipe_sha(original) == record["recipe_sha256"],
             "Source recipe differs",
         )
         source_index = json.loads(_small_member(archive, archive.getmember("sources.json")))
@@ -169,6 +172,16 @@ def check_sources(path: Path, record: dict) -> None:
             isinstance(source_index, list) and bool(source_index), "No source archives retained"
         )
         allowed = {"recipe.rb", "sources.json", "BUILDING.txt", "Homebrew-LICENSE.txt"}
+        if build_profile(record["name"]):
+            require(
+                "build.patch" in seen
+                and _small_member(archive, archive.getmember("build.patch"))
+                == recipe_patch(record["name"], original)
+                and record["build_recipe_sha256"]
+                == recipe_sha(build_recipe(record["name"], original)),
+                "Build recipe patch differs",
+            )
+            allowed.add("build.patch")
         for item in source_index:
             keys = {"filename", "url", "sha256", "size"}
             require(
@@ -300,7 +313,11 @@ def validate(directory: Path, *, verified: bool | None = None) -> dict:
     )
     allowed, names = {"manifest.json", "SHA256SUMS"}, set()
     for item in manifest["packages"]:
-        require(isinstance(item, dict) and set(item) == PACKAGE_KEYS, "Invalid package record")
+        require(isinstance(item, dict), "Invalid package record")
+        expected_keys = PACKAGE_KEYS | (
+            {"build_recipe_sha256"} if build_profile(item["name"]) else set()
+        )
+        require(set(item) == expected_keys, "Invalid package record")
         package_name = name(item["name"])
         require(package_name not in names, "Duplicate package")
         names.add(package_name)
@@ -343,6 +360,7 @@ def validate(directory: Path, *, verified: bool | None = None) -> dict:
                 "brew_commit": manifest["brew_commit"],
                 "core_commit": manifest["core_commit"],
                 "plan": manifest["plan"],
+                **build_profile(package_name),
             },
             "Release inputs do not match the build manifest",
         )

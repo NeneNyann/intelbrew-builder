@@ -52,9 +52,6 @@ jobs:
       core_commit: ${{ steps.resolve.outputs.core_commit }}
       plan_tag: ${{ steps.upload.outputs.plan_tag }}
       plan_sha256: ${{ steps.upload.outputs.plan_sha256 }}
-      llvm_checkpoint: ${{ steps.resolve.outputs.llvm_checkpoint }}
-      llvm_checkpoint_sha256: ${{ steps.resolve.outputs.llvm_checkpoint_sha256 }}
-      llvm_core_commit: ${{ steps.resolve.outputs.llvm_core_commit }}
     env:
       BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
     steps:
@@ -98,12 +95,7 @@ jobs:
     with:
       root: ${{ matrix.root }}
       brew_commit: ${{ needs.select.outputs.brew_commit }}
-      core_commit: >-
-        ${{ matrix.root == 'llvm' && needs.select.outputs.llvm_core_commit
-        || needs.select.outputs.core_commit }}
-      llvm_checkpoint: ${{ matrix.root == 'llvm' && needs.select.outputs.llvm_checkpoint || '' }}
-      llvm_checkpoint_sha256: >-
-        ${{ matrix.root == 'llvm' && needs.select.outputs.llvm_checkpoint_sha256 || '' }}
+      core_commit: ${{ needs.select.outputs.core_commit }}
     permissions:
       contents: write
       actions: read
@@ -153,8 +145,3 @@ jobs:
           persist-credentials: false
       - name: Delete temporary candidates
         run: python3 -m bottles.transfer cleanup
-      - name: Delete temporary LLVM checkpoints
-        env:
-          LLVM_CHECKPOINT: ${{ needs.select.outputs.llvm_checkpoint }}
-          LLVM_CHECKPOINT_SHA256: ${{ needs.select.outputs.llvm_checkpoint_sha256 }}
-        run: python3 -m bottles.llvm cleanup

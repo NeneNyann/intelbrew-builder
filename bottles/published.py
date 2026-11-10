@@ -10,6 +10,7 @@ from .artifacts import MANIFEST_KEYS
 from .common import MAX_JSON, filename, name, require, sha
 from .github import api, attest
 from .network import public_bytes
+from .recipes import build_profile
 
 
 def published_manifest(root_url: str, cfg: dict) -> dict:
@@ -59,6 +60,10 @@ def published_manifest(root_url: str, cfg: dict) -> dict:
         len(records) == 1 and records[0]["release"] == tag, "Release manifest identity mismatch"
     )
     item = records[0]
+    require(
+        all(item["inputs"].get(key) == value for key, value in build_profile(item["name"]).items()),
+        "Published build profile differs",
+    )
     for record in (
         {key: item[key] for key in ("filename", "sha256", "size")},
         item["bottle_json"],

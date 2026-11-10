@@ -266,6 +266,8 @@ def brew(
     *args: str, cwd: Path | None = None, capture: bool = True, retry_network: bool = False
 ) -> str:
     env = brew_environment()
+    if not capture:
+        args = (args[0], "--verbose", *args[1:])
     if retry_network:
         from .network import retry
 
