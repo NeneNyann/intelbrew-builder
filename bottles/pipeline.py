@@ -10,6 +10,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+from collections.abc import Callable
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 
@@ -32,7 +33,7 @@ from .common import (
     write_json,
 )
 from .metadata import bottle_json, recipe_sha, release_tag, release_url
-from .recipes import build_profile, build_recipe, patched_recipe, recipe_patch
+from .recipes import build_profile, build_recipe, recipe_patch
 from .sources import identity as source_identity
 from .sources import retain as retain_git
 
@@ -203,7 +204,13 @@ def _snapshot(cfg: dict) -> None:
     )
 
 
-def build(root: str, output: Path) -> None:
+def install_source(meta: dict, plan: list[dict]) -> None:
+    brew("install", "--build-bottle", "--formula", "homebrew/core/" + meta["name"], capture=False)
+
+
+def build(
+    root: str, output: Path, install: Callable[[dict, list[dict]], None] = install_source
+) -> None:
     hosted(mac=True)
     cfg = config()
     _snapshot(cfg)
@@ -255,10 +262,7 @@ def build(root: str, output: Path) -> None:
         }
         tag = release_tag(meta, inputs)
         root_url = release_url(cfg["core_repository"], tag)
-        with patched_recipe(meta):
-            brew(
-                "install", "--build-bottle", "--formula", "homebrew/core/" + formula, capture=False
-            )
+        install(meta, ordered)
         brew("test", "homebrew/core/" + formula, capture=False)
         with tempfile.TemporaryDirectory(
             prefix="bottle-", dir=os.environ["RUNNER_TEMP"]

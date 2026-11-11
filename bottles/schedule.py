@@ -21,6 +21,7 @@ from .common import (
     target,
 )
 from .github import retry
+from .initialize import outputs
 from .metadata import BOTTLE_BLOCK, recipe_sha
 from .pipeline import dependency_graph
 from .publish import _read_core_file
@@ -200,9 +201,14 @@ def wave(path: Path) -> None:
     blocked_roots = sorted(set(state["roots"]) & blocked)
     if blocked_roots:
         summary("Blocked targets: " + ", ".join(blocked_roots))
-    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-        stream.write("formulae=" + json.dumps(state["ready"], separators=(",", ":")) + "\n")
-        stream.write("has_work=" + str(bool(state["ready"])).lower() + "\n")
+    ordinary = [formula for formula in state["ready"] if formula != "llvm"]
+    build_llvm = "llvm" in state["ready"]
+    outputs(
+        formulae=json.dumps(ordinary, separators=(",", ":")),
+        has_work=str(bool(ordinary)).lower(),
+        build_llvm=str(build_llvm).lower(),
+        parallelism="4" if build_llvm else "5",
+    )
     summary(
         f"Wave {state['wave']}: {len(state['ready'])} ready, "
         f"{state['pending']} waiting, {len(blocked_roots)} blocked."

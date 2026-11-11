@@ -25,8 +25,9 @@ from .common import (
 )
 from .github import api, delete_release, optional, pages, retry
 from .initialize import outputs
+from .llvm import completed_checkpoint, reference
 from .network import public_bytes
-from .publish import _remote_assets, upload_assets
+from .transfer import upload_temporary
 
 WORKFLOWS = {".github/workflows/bottles.yml", ".github/workflows/waves.yml"}
 TAG = re.compile(r"wave-([1-9][0-9]*)-([1-9][0-9]*)-([1-9][0-9]*)\Z")
@@ -45,12 +46,15 @@ KEYS = {
     "run_attempt",
     "ready",
     "pending",
+    "llvm_checkpoint",
 }
 
 
 def validate(state: dict) -> dict:
+    if isinstance(state, dict) and state.get("schema") == 3 and "llvm_checkpoint" not in state:
+        state = dict(state, schema=4, llvm_checkpoint=None)
     require(
-        isinstance(state, dict) and set(state) == KEYS and state["schema"] == 3,
+        isinstance(state, dict) and set(state) == KEYS and state["schema"] == 4,
         "Invalid bottle wave state",
     )
     for key in ("workflow_commit", "brew_commit", "reference_core", "core_commit"):
@@ -93,6 +97,8 @@ def validate(state: dict) -> dict:
         and state["pending"] >= 0,
         "Invalid wave counters",
     )
+    if state["llvm_checkpoint"] is not None:
+        reference(state["llvm_checkpoint"])
     return state
 
 
@@ -142,12 +148,14 @@ def read_release(tag: str, checksum: str) -> dict:
     return state
 
 
-def results(state: dict) -> dict[str, str]:
+def results(state: dict) -> tuple[dict[str, str], dict | None]:
     repository = config()["builder_repository"]
     jobs = pages(
         f"repos/{repository}/actions/runs/{state['source_run']}/jobs?filter=latest", key="jobs"
     )
     result = {}
+    llvm = state["llvm_checkpoint"]
+    current_llvm = completed_checkpoint(state, jobs) if "llvm" in state["ready"] else None
     for formula in state["ready"]:
         related = [
             job
@@ -158,6 +166,11 @@ def results(state: dict) -> dict[str, str]:
             job["name"].endswith(f"publish ({formula})") and job["conclusion"] == "success"
             for job in related
         ):
+            if formula == "llvm":
+                llvm = None
+            continue
+        if formula == "llvm" and current_llvm is not None:
+            llvm = current_llvm
             continue
         failed = [
             job for job in related if job["conclusion"] in {"failure", "timed_out", "cancelled"}
@@ -166,7 +179,7 @@ def results(state: dict) -> dict[str, str]:
             "; ".join(f"{job['name']}: {job['conclusion']}" for job in failed)
             or "Bottle publication did not complete"
         )
-    return result
+    return result, llvm
 
 
 def resolve(path: Path) -> None:
@@ -178,7 +191,9 @@ def resolve(path: Path) -> None:
             state["workflow_commit"] == os.environ["GITHUB_SHA"],
             "Builder changed during the bottle session; start a new run",
         )
-        state["failed"].update(results(state))
+        failed, llvm = results(state)
+        state["failed"].update(failed)
+        state["llvm_checkpoint"] = llvm
         state["wave"] += 1
     else:
         roots = [target(value) for value in json.loads(os.environ["WAVE_ROOTS"])]
@@ -188,7 +203,7 @@ def resolve(path: Path) -> None:
                 api("repos/Homebrew/homebrew-cask/git/ref/heads/main")["object"]["sha"], git=True
             )
         state = {
-            "schema": 3,
+            "schema": 4,
             "origin_run": os.environ["GITHUB_RUN_ID"],
             "workflow_commit": os.environ["GITHUB_SHA"],
             "brew_commit": sha(os.environ["WAVE_BREW_COMMIT"], git=True),
@@ -202,6 +217,7 @@ def resolve(path: Path) -> None:
             "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
             "ready": [],
             "pending": 0,
+            "llvm_checkpoint": None,
         }
     outside = sorted(set(state["roots"]) - set(cfg["targets"]))
     require(
@@ -221,6 +237,12 @@ def resolve(path: Path) -> None:
     )
     save(path, state)
     outputs(brew_commit=state["brew_commit"], core_commit=state["core_commit"])
+    llvm = state["llvm_checkpoint"] or {}
+    outputs(
+        llvm_checkpoint=llvm.get("tag", ""),
+        llvm_checkpoint_sha256=llvm.get("sha256", ""),
+        llvm_core_commit=llvm.get("core_commit", ""),
+    )
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as stream:
         for key, value in (
             ("BREW_COMMIT", state["brew_commit"]),
@@ -238,40 +260,11 @@ def upload(path: Path) -> None:
         and state["workflow_commit"] == os.environ["GITHUB_SHA"],
         "Wrong wave upload context",
     )
-    repository = config()["builder_repository"]
     tag = f"wave-{state['origin_run']}-{state['source_run']}-{state['run_attempt']}"
-    build_url = f"https://github.com/{repository}/actions/runs/{state['source_run']}"
-    matches = [item for item in pages(f"repos/{repository}/releases") if item["tag_name"] == tag]
-    require(len(matches) <= 1, "Ambiguous wave Release")
-    release = (
-        matches[0]
-        if matches
-        else api(
-            f"repos/{repository}/releases",
-            payload={
-                "tag_name": tag,
-                "target_commitish": state["workflow_commit"],
-                "name": tag,
-                "body": f"[Build]({build_url})",
-                "draft": True,
-                "prerelease": True,
-            },
-        )
+    run_url = (
+        f"https://github.com/{config()['builder_repository']}/actions/runs/{state['source_run']}"
     )
-    require(
-        release["target_commitish"] == state["workflow_commit"] and release["prerelease"],
-        "Wave Release target changed",
-    )
-    release["assets"] = pages(f"repos/{repository}/releases/{release['id']}/assets")
-    upload_assets(repository, release, [path])
-    release["assets"] = pages(f"repos/{repository}/releases/{release['id']}/assets")
-    require(_remote_assets(repository, release, [path]) == {"wave.json"}, "Incomplete wave Release")
-    if release["draft"]:
-        api(
-            f"repos/{repository}/releases/{release['id']}",
-            method="PATCH",
-            payload={"draft": False, "make_latest": "false"},
-        )
+    upload_temporary(tag, state["workflow_commit"], [path], f"[Build]({run_url})")
     outputs(plan_tag=tag, plan_sha256=digest(path))
 
 
@@ -340,10 +333,14 @@ def finish() -> None:
         and state["workflow_commit"] == os.environ["GITHUB_SHA"],
         "Wrong wave completion context",
     )
-    errors = dict(state["failed"], **results(state))
+    failed, llvm = results(state)
+    errors = dict(state["failed"], **failed)
     for formula, reason in sorted(errors.items()):
         summary(f"{formula}: {reason}")
-    if state["pending"] and state["ready"]:
+    continuing_llvm = llvm is not None and llvm["tag"].startswith(
+        f"llvm-stage-{state['source_run']}-"
+    )
+    if (state["pending"] or continuing_llvm) and state["ready"]:
         repository = config()["builder_repository"]
         title = "Bottle wave " + tag
 

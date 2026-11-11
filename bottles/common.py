@@ -6,6 +6,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -223,25 +225,31 @@ def run(
 ) -> str:
     try:
         if not capture:
-            with subprocess.Popen(
-                args,
-                cwd=cwd,
-                env=env,
-                text=True,
-                errors="replace",
-                stdin=subprocess.PIPE if input_text is not None else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            ) as process:
-                if input_text is not None:
-                    process.stdin.write(input_text)
-                    process.stdin.close()
-                details = ""
-                for line in process.stdout:
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-                    details = (details + line)[-4000:]
-                code = process.wait()
+            source = (
+                tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+                if input_text is not None
+                else nullcontext(None)
+            )
+            with source as stdin:
+                if stdin is not None:
+                    stdin.write(input_text)
+                    stdin.seek(0)
+                with subprocess.Popen(
+                    args,
+                    cwd=cwd,
+                    env=env,
+                    text=True,
+                    errors="replace",
+                    stdin=stdin,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                ) as process:
+                    details = ""
+                    for chunk in iter(lambda: process.stdout.readline(65536), ""):
+                        sys.stdout.write(chunk)
+                        sys.stdout.flush()
+                        details = (details + chunk)[-4000:]
+                    code = process.wait()
             require(code == 0, f"{args[0]} failed ({code}): {details}")
             return ""
         result = subprocess.run(
@@ -250,8 +258,7 @@ def run(
             env=env,
             input=input_text,
             text=True,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.PIPE if capture else None,
+            capture_output=True,
             check=False,
         )
     except OSError as error:

@@ -1,4 +1,4 @@
-name: Build formula bottles
+name: Verify and publish candidate
 
 on:
   workflow_call:
@@ -12,16 +12,18 @@ on:
       core_commit:
         required: true
         type: string
+      tag:
+        required: true
+        type: string
+      manifest_sha256:
+        required: true
+        type: string
     secrets:
       CORE_TOKEN:
         required: true
 
 permissions:
   contents: read
-
-concurrency:
-  group: root-${{ github.ref }}-${{ inputs.root }}
-  cancel-in-progress: false
 
 env:
   BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
@@ -33,43 +35,8 @@ env:
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
 jobs:
-  build:
-    name: build (${{ inputs.root }})
-    runs-on: macos-15-intel
-    timeout-minutes: 360
-    permissions:
-      contents: write
-    outputs:
-      has_work: ${{ steps.build.outputs.has_work }}
-      tag: ${{ steps.transfer.outputs.tag }}
-      manifest_sha256: ${{ steps.transfer.outputs.manifest_sha256 }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Prepare Homebrew at the selected commits
-        run: bash scripts/prepare-runner.sh
-      - name: Build formula using published dependency bottles
-        id: build
-        timeout-minutes: 330
-        run: >-
-          /usr/bin/python3 -m bottles.pipeline build
-          --root "$ROOT_FORMULA"
-          --output "$RUNNER_TEMP/candidate"
-      - name: Upload candidate release
-        if: steps.build.outputs.has_work == 'true'
-        id: transfer
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          /usr/bin/python3 -m bottles.transfer upload
-          --directory "$RUNNER_TEMP/candidate"
-
   verify:
     name: verify (${{ inputs.root }})
-    needs: build
-    if: needs.build.outputs.has_work == 'true'
     runs-on: macos-15-intel
     timeout-minutes: 180
     permissions:
@@ -84,8 +51,8 @@ jobs:
       - name: Download candidate release
         env:
           GH_TOKEN: ${{ github.token }}
-          TRANSFER_TAG: ${{ needs.build.outputs.tag }}
-          CANDIDATE_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+          TRANSFER_TAG: ${{ inputs.tag }}
+          CANDIDATE_SHA256: ${{ inputs.manifest_sha256 }}
         run: >-
           /usr/bin/python3 -m bottles.transfer download
           --directory "$RUNNER_TEMP/candidate"
@@ -100,7 +67,7 @@ jobs:
 
   publish:
     name: publish (${{ inputs.root }})
-    needs: [build, verify]
+    needs: verify
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     timeout-minutes: 30
@@ -117,8 +84,8 @@ jobs:
       - name: Download candidate release
         env:
           GH_TOKEN: ${{ github.token }}
-          TRANSFER_TAG: ${{ needs.build.outputs.tag }}
-          CANDIDATE_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+          TRANSFER_TAG: ${{ inputs.tag }}
+          CANDIDATE_SHA256: ${{ inputs.manifest_sha256 }}
         run: >-
           python3 -m bottles.transfer download
           --directory "$RUNNER_TEMP/candidate"

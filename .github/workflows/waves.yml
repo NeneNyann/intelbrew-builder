@@ -48,6 +48,11 @@ jobs:
     outputs:
       formulae: ${{ steps.select.outputs.formulae }}
       has_work: ${{ steps.select.outputs.has_work }}
+      build_llvm: ${{ steps.select.outputs.build_llvm }}
+      parallelism: ${{ steps.select.outputs.parallelism }}
+      llvm_checkpoint: ${{ steps.resolve.outputs.llvm_checkpoint }}
+      llvm_checkpoint_sha256: ${{ steps.resolve.outputs.llvm_checkpoint_sha256 }}
+      llvm_core_commit: ${{ steps.resolve.outputs.llvm_core_commit }}
       brew_commit: ${{ steps.resolve.outputs.brew_commit }}
       core_commit: ${{ steps.resolve.outputs.core_commit }}
       plan_tag: ${{ steps.upload.outputs.plan_tag }}
@@ -88,10 +93,10 @@ jobs:
     if: needs.select.outputs.has_work == 'true'
     strategy:
       fail-fast: false
-      max-parallel: 5
+      max-parallel: ${{ fromJSON(needs.select.outputs.parallelism) }}
       matrix:
         root: ${{ fromJSON(needs.select.outputs.formulae) }}
-    uses: ./.github/workflows/root.yml
+    uses: ./.github/workflows/bottle.yml
     with:
       root: ${{ matrix.root }}
       brew_commit: ${{ needs.select.outputs.brew_commit }}
@@ -104,9 +109,26 @@ jobs:
     secrets:
       CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
 
+  llvm:
+    needs: select
+    if: needs.select.outputs.build_llvm == 'true'
+    uses: ./.github/workflows/llvm.yml
+    with:
+      checkpoint: ${{ needs.select.outputs.llvm_checkpoint }}
+      checkpoint_sha256: ${{ needs.select.outputs.llvm_checkpoint_sha256 }}
+      brew_commit: ${{ needs.select.outputs.brew_commit }}
+      core_commit: ${{ needs.select.outputs.llvm_core_commit || needs.select.outputs.core_commit }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+
   finish:
     name: Continue bottle session
-    needs: [select, pipeline]
+    needs: [select, pipeline, llvm]
     if: ${{ !cancelled() && needs.select.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -128,7 +150,7 @@ jobs:
 
   cleanup:
     name: Clean temporary releases
-    needs: [select, pipeline, finish]
+    needs: [select, pipeline, llvm, finish]
     if: ${{ !cancelled() && needs.select.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -145,3 +167,8 @@ jobs:
           persist-credentials: false
       - name: Delete temporary candidates
         run: python3 -m bottles.transfer cleanup
+      - name: Clean LLVM checkpoints
+        env:
+          LLVM_CHECKPOINT: ${{ needs.select.outputs.llvm_checkpoint }}
+          LLVM_CHECKPOINT_SHA256: ${{ needs.select.outputs.llvm_checkpoint_sha256 }}
+        run: python3 -m bottles.llvm cleanup

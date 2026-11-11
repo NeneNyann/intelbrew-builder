@@ -1,0 +1,110 @@
+name: Build LLVM stage
+
+on:
+  workflow_call:
+    inputs:
+      brew_commit:
+        required: true
+        type: string
+      core_commit:
+        required: true
+        type: string
+      checkpoint:
+        required: false
+        type: string
+      checkpoint_sha256:
+        required: false
+        type: string
+    secrets:
+      CORE_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: root-${{ github.ref }}-llvm
+  cancel-in-progress: false
+
+env:
+  BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+  BREW_COMMIT: ${{ inputs.brew_commit }}
+  CORE_COMMIT: ${{ inputs.core_commit }}
+  ROOT_FORMULA: llvm
+  LLVM_CHECKPOINT: ${{ inputs.checkpoint }}
+  LLVM_CHECKPOINT_SHA256: ${{ inputs.checkpoint_sha256 }}
+  HOMEBREW_NO_INSTALL_FROM_API: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+jobs:
+  build:
+    name: build (llvm)
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      tag: ${{ steps.transfer.outputs.tag }}
+      manifest_sha256: ${{ steps.transfer.outputs.manifest_sha256 }}
+    steps:
+      - name: Set compilation deadline
+        run: echo "LLVM_DEADLINE=$(($(date +%s) + 240 * 60))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Prepare Homebrew at the selected commits
+        run: bash scripts/prepare-runner.sh
+      - name: Restore LLVM build directory
+        if: inputs.checkpoint != ''
+        timeout-minutes: 55
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -m bottles.llvm restore
+      - name: Build LLVM
+        id: build
+        run: /usr/bin/python3 -m bottles.llvm build
+      - name: Pack LLVM build directory
+        if: steps.build.outputs.paused == 'true'
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          export LC_ALL=C COPYFILE_DISABLE=1
+          directory="$RUNNER_TEMP/llvm-checkpoint"
+          mkdir "$directory"
+          /usr/bin/tar --format pax -czf - -C /private/tmp/intelbrew-llvm build |
+            /usr/bin/split -d -a 3 -b 900m - "$directory/part-"
+      - name: Upload LLVM checkpoint
+        if: steps.build.outputs.paused == 'true'
+        timeout-minutes: 55
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -m bottles.llvm upload
+      - name: Upload candidate release
+        if: steps.build.outputs.has_work == 'true' && steps.build.outputs.paused != 'true'
+        id: transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          /usr/bin/python3 -m bottles.transfer upload
+          --directory "$RUNNER_TEMP/candidate"
+
+  release:
+    needs: build
+    if: needs.build.outputs.tag != ''
+    uses: ./.github/workflows/root.yml
+    with:
+      root: llvm
+      brew_commit: ${{ inputs.brew_commit }}
+      core_commit: ${{ inputs.core_commit }}
+      tag: ${{ needs.build.outputs.tag }}
+      manifest_sha256: ${{ needs.build.outputs.manifest_sha256 }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}

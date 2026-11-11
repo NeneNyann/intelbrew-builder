@@ -1,0 +1,84 @@
+name: Build formula bottles
+
+on:
+  workflow_call:
+    inputs:
+      root:
+        required: true
+        type: string
+      brew_commit:
+        required: true
+        type: string
+      core_commit:
+        required: true
+        type: string
+    secrets:
+      CORE_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: root-${{ github.ref }}-${{ inputs.root }}
+  cancel-in-progress: false
+
+env:
+  BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+  BREW_COMMIT: ${{ inputs.brew_commit }}
+  CORE_COMMIT: ${{ inputs.core_commit }}
+  ROOT_FORMULA: ${{ inputs.root }}
+  HOMEBREW_NO_INSTALL_FROM_API: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+jobs:
+  build:
+    name: build (${{ inputs.root }})
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.transfer.outputs.tag }}
+      manifest_sha256: ${{ steps.transfer.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Prepare Homebrew at the selected commits
+        run: bash scripts/prepare-runner.sh
+      - name: Build formula using published dependency bottles
+        id: build
+        timeout-minutes: 330
+        run: >-
+          /usr/bin/python3 -m bottles.pipeline build
+          --root "$ROOT_FORMULA"
+          --output "$RUNNER_TEMP/candidate"
+      - name: Upload candidate release
+        if: steps.build.outputs.has_work == 'true'
+        id: transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          /usr/bin/python3 -m bottles.transfer upload
+          --directory "$RUNNER_TEMP/candidate"
+
+  release:
+    needs: build
+    if: needs.build.outputs.tag != ''
+    uses: ./.github/workflows/root.yml
+    with:
+      root: ${{ inputs.root }}
+      brew_commit: ${{ inputs.brew_commit }}
+      core_commit: ${{ inputs.core_commit }}
+      tag: ${{ needs.build.outputs.tag }}
+      manifest_sha256: ${{ needs.build.outputs.manifest_sha256 }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}

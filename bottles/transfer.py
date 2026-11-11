@@ -10,15 +10,11 @@ from pathlib import Path
 from .artifacts import validate
 from .common import Failure, config, digest, filename, hosted, name, require, sha
 from .github import api, delete_release, optional, pages, retry
+from .initialize import outputs
 from .network import release_download
 from .publish import _remote_assets, upload_assets
 
 TAG = re.compile(r"candidate-([1-9][0-9]*)-([1-9][0-9]*)-(.+)\Z")
-
-
-def output(key: str, value: str) -> None:
-    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-        stream.write(f"{key}={value}\n")
 
 
 def identity(manifest: dict) -> str:
@@ -35,9 +31,7 @@ def identity(manifest: dict) -> str:
     return filename(f"candidate-{manifest['run_id']}-{manifest['run_attempt']}-{manifest['root']}")
 
 
-def upload(directory: Path) -> None:
-    manifest = validate(directory, verified=False)
-    tag = identity(manifest)
+def upload_temporary(tag: str, commit: str, files: list[Path], body: str = "") -> None:
     repository = config()["builder_repository"]
     existing = optional(f"repos/{repository}/releases/tags/{tag}")
     if existing is None:
@@ -52,9 +46,9 @@ def upload(directory: Path) -> None:
                 f"repos/{repository}/releases",
                 payload={
                     "tag_name": tag,
-                    "target_commitish": manifest["workflow_commit"],
+                    "target_commitish": commit,
                     "name": tag,
-                    "body": "",
+                    "body": body,
                     "draft": True,
                     "prerelease": True,
                 },
@@ -62,12 +56,11 @@ def upload(directory: Path) -> None:
         )
     require(
         existing["tag_name"] == tag
-        and existing["target_commitish"] == manifest["workflow_commit"]
+        and existing["target_commitish"] == commit
         and existing["prerelease"] is True,
         "Transfer Release identity mismatch",
     )
     existing["assets"] = pages(f"repos/{repository}/releases/{existing['id']}/assets")
-    files = sorted(directory.iterdir())
     upload_assets(repository, existing, files)
     refreshed = api(f"repos/{repository}/releases/{existing['id']}")
     refreshed["assets"] = pages(f"repos/{repository}/releases/{existing['id']}/assets")
@@ -81,8 +74,13 @@ def upload(directory: Path) -> None:
             method="PATCH",
             payload={"draft": False, "make_latest": "false"},
         )
-    output("tag", tag)
-    output("manifest_sha256", digest(directory / "manifest.json"))
+
+
+def upload(directory: Path) -> None:
+    manifest = validate(directory, verified=False)
+    tag = identity(manifest)
+    upload_temporary(tag, manifest["workflow_commit"], sorted(directory.iterdir()))
+    outputs(tag=tag, manifest_sha256=digest(directory / "manifest.json"))
 
 
 def download(directory: Path) -> None:
