@@ -174,10 +174,21 @@ def _public_stream(url: str, size: int, output=None) -> str:
 
 
 def verify_public(url: str, size: int, checksum: str) -> None:
-    def verify():
-        require(_public_stream(url, size) == checksum, "Anonymous Release download differs")
-
-    retry(verify)
+    for attempt in range(6):
+        try:
+            observed = retry(lambda: _public_stream(url, size))
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+            error.close()
+            if attempt == 5:
+                raise Failure(f"Published Release asset still returns HTTP 404: {url}") from error
+            delay = 2 ** (attempt + 1)
+            print(f"Release asset returned HTTP 404, retrying in {delay}s: {url}", flush=True)
+            time.sleep(delay)
+        else:
+            require(observed == checksum, f"Anonymous Release download differs: {url}")
+            return
 
 
 def public_file(url: str, path: Path, size: int, checksum: str) -> None:
