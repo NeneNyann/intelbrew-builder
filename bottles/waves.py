@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .common import (
+    BOTTLE_WORKFLOWS,
     MAX_JSON,
     Failure,
     config,
@@ -29,7 +30,6 @@ from .llvm import completed_checkpoint, reference
 from .network import public_bytes
 from .transfer import upload_temporary
 
-WORKFLOWS = {".github/workflows/bottles.yml", ".github/workflows/waves.yml"}
 TAG = re.compile(r"wave-([1-9][0-9]*)-([1-9][0-9]*)-([1-9][0-9]*)\Z")
 KEYS = {
     "schema",
@@ -140,7 +140,7 @@ def read_release(tag: str, checksum: str) -> dict:
     )
     source = api(f"repos/{repository}/actions/runs/{state['source_run']}")
     require(
-        source["path"] in WORKFLOWS
+        source["path"] in BOTTLE_WORKFLOWS
         and source["head_branch"] == "main"
         and source["head_sha"] == state["workflow_commit"],
         "Untrusted wave source run",
@@ -306,7 +306,7 @@ def cleanup(origin: str, complete: bool) -> None:
         if source is None:
             continue
         require(
-            source["path"] in WORKFLOWS
+            source["path"] in BOTTLE_WORKFLOWS
             and source["head_branch"] == "main"
             and source["head_sha"] == release["target_commitish"],
             "Unexpected wave Release provenance",

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .artifacts import file_record
 from .common import (
+    BOTTLE_WORKFLOWS,
     MAX_JSON,
     ROOT,
     brew_environment,
@@ -34,7 +35,6 @@ from .transfer import upload_temporary
 
 WORK = Path("/private/tmp/intelbrew-llvm")
 TAG = re.compile(r"llvm-stage-([1-9][0-9]*)-([1-9][0-9]*)\Z")
-WORKFLOWS = {".github/workflows/bottles.yml", ".github/workflows/waves.yml"}
 PART_BYTES = 900 * 1024 * 1024
 
 
@@ -105,7 +105,7 @@ def checkpoint(tag: str, checksum: str | None = None) -> tuple[dict, dict]:
         )
     source = api(f"repos/{repository}/actions/runs/{value['run_id']}")
     require(
-        source["path"] in WORKFLOWS
+        source["path"] in BOTTLE_WORKFLOWS
         and source["head_branch"] == "main"
         and source["head_sha"] == value["workflow_commit"],
         "Untrusted LLVM checkpoint source",
@@ -347,7 +347,7 @@ def cleanup() -> None:
         if source is None or source["status"] != "completed":
             continue
         require(
-            source["path"] in WORKFLOWS
+            source["path"] in BOTTLE_WORKFLOWS
             and source["head_branch"] == "main"
             and source["head_sha"] == release["target_commitish"],
             "Unexpected LLVM checkpoint provenance",

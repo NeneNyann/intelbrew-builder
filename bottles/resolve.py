@@ -30,7 +30,9 @@ def stable_brew_commit() -> str:
     raise Failure("Homebrew release tag nesting exceeds the limit")
 
 
-def select_snapshot(brew_commit: str = "", core_commit: str = "") -> tuple[str, str]:
+def select_snapshot(
+    brew_commit: str = "", core_commit: str = "", *, allow_empty_core: bool = True
+) -> tuple[str, str]:
     require(bool(brew_commit) == bool(core_commit), "Provide both snapshot commits or neither")
     if brew_commit:
         return sha(brew_commit, git=True), sha(core_commit, git=True)
@@ -46,6 +48,7 @@ def select_snapshot(brew_commit: str = "", core_commit: str = "") -> tuple[str, 
     if branches:
         core_ref = api(f"repos/{cfg['core_repository']}/git/ref/heads/main")
     else:
+        require(allow_empty_core, "Run Initialize Core before building from an empty Core")
         tags = api(f"repos/{cfg['core_repository']}/tags?per_page=100")
         require(tags == [], "Core initialization requires an empty repository")
         core_ref = api("repos/Homebrew/homebrew-core/git/ref/heads/main")
@@ -55,7 +58,9 @@ def select_snapshot(brew_commit: str = "", core_commit: str = "") -> tuple[str, 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--manifest", type=Path)
+    mode.add_argument("--build", action="store_true")
     args = parser.parse_args()
     try:
         hosted()
@@ -79,6 +84,7 @@ def main() -> int:
             brew_commit, core_commit = select_snapshot(
                 os.environ.get("REQUESTED_BREW_COMMIT", ""),
                 os.environ.get("REQUESTED_CORE_COMMIT", ""),
+                allow_empty_core=not args.build,
             )
         for destination, values in (
             (

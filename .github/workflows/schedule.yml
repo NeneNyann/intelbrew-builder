@@ -1,0 +1,64 @@
+name: Scheduled Core sync and bottle build
+
+on:
+  schedule:
+    - cron: "17 18 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    name: Select source commits
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.snapshot.outputs.enabled }}
+      brew_commit: ${{ steps.snapshot.outputs.brew_commit }}
+      core_commit: ${{ steps.snapshot.outputs.core_commit }}
+    env:
+      BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - id: snapshot
+        run: python3 -m bottles.resolve
+
+  initialize:
+    needs: snapshot
+    if: needs.snapshot.outputs.enabled == 'true'
+    uses: ./.github/workflows/initialize.yml
+    with:
+      brew_commit: ${{ needs.snapshot.outputs.brew_commit }}
+      core_commit: ${{ needs.snapshot.outputs.core_commit }}
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+
+  sync:
+    needs: [snapshot, initialize]
+    uses: ./.github/workflows/sync.yml
+    with:
+      brew_commit: ${{ needs.snapshot.outputs.brew_commit }}
+      core_commit: ${{ needs.snapshot.outputs.core_commit }}
+    permissions:
+      contents: read
+      attestations: read
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+
+  build:
+    needs: [snapshot, sync]
+    uses: ./.github/workflows/bottles.yml
+    with:
+      brew_commit: ${{ needs.snapshot.outputs.brew_commit }}
+      core_commit: ${{ needs.sync.outputs.core_commit }}
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+      attestations: write
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}

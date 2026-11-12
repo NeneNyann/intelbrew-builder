@@ -13,6 +13,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_JSON = 8 * 1024 * 1024
+BOTTLE_WORKFLOWS = {
+    ".github/workflows/bottles.yml",
+    ".github/workflows/schedule.yml",
+    ".github/workflows/waves.yml",
+}
 NAME = re.compile(r"[a-z0-9][a-z0-9+_.-]*(?:@[0-9][a-z0-9+_.-]*)?\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 

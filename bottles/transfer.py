@@ -8,7 +8,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .artifacts import validate
-from .common import Failure, config, digest, filename, hosted, name, require, sha
+from .common import (
+    BOTTLE_WORKFLOWS,
+    Failure,
+    config,
+    digest,
+    filename,
+    hosted,
+    name,
+    require,
+    sha,
+)
 from .github import api, delete_release, optional, pages, retry
 from .initialize import outputs
 from .network import release_download
@@ -148,7 +158,7 @@ def cleanup() -> None:
         if not source:
             continue
         require(
-            source["path"] in {".github/workflows/bottles.yml", ".github/workflows/waves.yml"}
+            source["path"] in BOTTLE_WORKFLOWS
             and source["head_branch"] == "main"
             and source["head_sha"] == release["target_commitish"],
             "Unexpected temporary Release provenance",

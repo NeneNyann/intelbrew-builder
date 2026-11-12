@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from .artifacts import checksums, validate
 from .common import (
+    BOTTLE_WORKFLOWS,
     Failure,
     config,
     digest,
@@ -444,8 +445,7 @@ def publish(candidate: Path, releases: Path) -> None:
         source_run.get("head_sha") == manifest["workflow_commit"]
         and source_run.get("head_branch") == "main"
         and source_run.get("head_repository", {}).get("full_name") == cfg["builder_repository"]
-        and source_run.get("path")
-        in {".github/workflows/bottles.yml", ".github/workflows/waves.yml"},
+        and source_run.get("path") in BOTTLE_WORKFLOWS,
         "Untrusted source workflow run",
     )
     jobs = pages(
