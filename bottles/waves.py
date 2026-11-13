@@ -32,6 +32,7 @@ from .network import public_bytes
 from .transfer import upload_temporary
 
 TAG = re.compile(r"wave-([1-9][0-9]*)-([1-9][0-9]*)-([1-9][0-9]*)\Z")
+BATCH_TITLES = ("Dependency batch after ", "Bottle wave ")
 KEYS = {
     "schema",
     "origin_run",
@@ -264,6 +265,15 @@ def upload(path: Path) -> None:
     outputs(plan_tag=tag, plan_sha256=digest(path))
 
 
+def previous_batch_tag(title: str) -> str | None:
+    for prefix in BATCH_TITLES:
+        if title.startswith(prefix):
+            tag = title.removeprefix(prefix)
+            if TAG.fullmatch(tag):
+                return tag
+    return None
+
+
 def cleanup(origin: str, complete: bool) -> None:
     repository = config()["builder_repository"]
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
@@ -285,9 +295,9 @@ def cleanup(origin: str, complete: bool) -> None:
             ):
                 if item["id"] == int(os.environ["GITHUB_RUN_ID"]):
                     continue
-                match = re.match(r"Bottle wave wave-([0-9]+)-", item["display_title"])
-                if match:
-                    active.add(match[1])
+                previous = previous_batch_tag(item["display_title"])
+                if previous:
+                    active.add(previous.split("-")[1])
     for release in releases:
         match = TAG.fullmatch(release["tag_name"])
         if not release.get("prerelease"):
@@ -321,6 +331,33 @@ def cleanup(origin: str, complete: bool) -> None:
         delete_release(repository, release)
 
 
+def dispatch_next(repository: str, commit: str, tag: str, checksum: str) -> None:
+    workflow = f"repos/{repository}/actions/workflows/waves.yml"
+    runs = pages(
+        f"{workflow}/runs?event=workflow_dispatch&branch=main&head_sha={commit}",
+        key="workflow_runs",
+    )
+    matches = [run for run in runs if previous_batch_tag(run["display_title"]) == tag]
+    for run in matches:
+        if run["status"] != "completed" or run["conclusion"] == "success":
+            summary(
+                f"Next dependency batch already {run['conclusion'] or run['status']}: {run['html_url']}"
+            )
+            return
+    if matches:
+        latest = max(matches, key=lambda run: run["id"])
+        require(
+            latest["conclusion"] == "cancelled",
+            f"Next dependency batch ended with {latest['conclusion']}: {latest['html_url']}",
+        )
+        summary(f"Resuming cancelled dependency batch from {tag}.")
+    api(
+        f"{workflow}/dispatches",
+        payload={"ref": "main", "inputs": {"previous": tag, "digest": checksum}},
+    )
+    summary("Queued the next dependency batch.")
+
+
 def finish() -> None:
     tag, checksum = os.environ["WAVE_PLAN"], os.environ["WAVE_DIGEST"]
     state = read_release(tag, checksum)
@@ -339,25 +376,7 @@ def finish() -> None:
     full_batch = set(state["roots"]) == set(config()["targets"])
     if (state["pending"] or continuing_llvm or (full_batch and not errors)) and state["ready"]:
         repository = config()["builder_repository"]
-        title = "Bottle wave " + tag
-
-        def dispatch():
-            existing = pages(
-                f"repos/{repository}/actions/workflows/waves.yml/runs?"
-                f"event=workflow_dispatch&head_sha={state['workflow_commit']}",
-                key="workflow_runs",
-            )
-            if not any(item["display_title"] == title for item in existing):
-                api(
-                    f"repos/{repository}/actions/workflows/waves.yml/dispatches",
-                    payload={
-                        "ref": "main",
-                        "inputs": {"previous": tag, "digest": checksum},
-                    },
-                )
-                summary("Queued the next bottle wave.")
-
-        retry(dispatch)
+        retry(lambda: dispatch_next(repository, state["workflow_commit"], tag, checksum))
         cleanup(state["origin_run"], False)
     else:
         require(state["pending"] == 0, "Bottle session has unresolved dependencies")

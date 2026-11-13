@@ -1,4 +1,4 @@
-name: Build and publish bottles
+name: Build requested packages
 
 on:
   workflow_dispatch:
@@ -71,6 +71,7 @@ jobs:
         run: python3 -u -m bottles.schedule
 
   pipeline:
+    name: Schedule dependency batch
     needs: select
     uses: ./.github/workflows/waves.yml
     with:

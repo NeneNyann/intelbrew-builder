@@ -1,4 +1,4 @@
-name: Build formula bottles
+name: Build a single formula bottle
 
 on:
   workflow_call:

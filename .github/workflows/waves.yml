@@ -1,5 +1,5 @@
-name: Build bottle wave
-run-name: Bottle wave ${{ inputs.previous || github.run_id }}
+name: Schedule dependency batches
+run-name: Dependency batch after ${{ inputs.previous || github.run_id }}
 
 on:
   workflow_dispatch:
@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   select:
-    name: Plan bottle wave
+    name: Select packages with ready dependencies
     if: github.ref == 'refs/heads/main'
     runs-on: macos-15-intel
     timeout-minutes: 60
@@ -92,6 +92,7 @@ jobs:
         run: /usr/bin/python3 -m bottles.waves upload --state "$RUNNER_TEMP/wave.json"
 
   pipeline:
+    name: Package ${{ matrix.root }}
     needs: select
     if: needs.select.outputs.has_work == 'true'
     strategy:
@@ -153,7 +154,7 @@ jobs:
       CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
 
   finish:
-    name: Continue bottle session
+    name: Advance or finish the build
     needs: [select, pipeline, llvm, resume]
     if: ${{ !cancelled() && needs.select.result == 'success' }}
     runs-on: ubuntu-26.04
