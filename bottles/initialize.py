@@ -7,7 +7,17 @@ import sys
 import time
 from pathlib import Path
 
-from .common import ROOT, Failure, config, hosted, require, run, sha, summary
+from .common import (
+    CORE_STAGING,
+    ROOT,
+    Failure,
+    config,
+    hosted,
+    require,
+    run,
+    sha,
+    summary,
+)
 from .github import BOT, api, optional, retry
 from .network import retry_delay, transient
 
@@ -163,6 +173,9 @@ def readme() -> None:
     hosted(trusted=True)
     cfg = config()
     require(repository_state() is not None, "Initialize Core before publishing its README")
+    repository = cfg["core_repository"]
+    staged = optional(f"repos/{repository}/git/ref/heads/{CORE_STAGING}")
+    branch = CORE_STAGING if staged is not None else "main"
     text = (ROOT / "templates/core-readme.md").read_text(encoding="utf-8")
     for key in ("core_repository", "builder_repository"):
         text = text.replace("{{" + key + "}}", cfg[key])
@@ -170,10 +183,10 @@ def readme() -> None:
     content = text.encode("utf-8")
     require(0 < len(content) <= 65536, "Invalid Core README size")
     endpoint = f"repos/{cfg['core_repository']}/contents/README.md"
-    current = optional(endpoint + "?ref=main")
+    current = optional(endpoint + "?ref=" + branch)
     payload = {
         "message": "docs: update Core usage instructions",
-        "branch": "main",
+        "branch": branch,
         "content": base64.b64encode(content).decode("ascii"),
         "author": BOT,
         "committer": BOT,

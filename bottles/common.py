@@ -13,6 +13,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_JSON = 8 * 1024 * 1024
+CORE_STAGING = "bottle-staging"
 BOTTLE_WORKFLOWS = {
     ".github/workflows/bottles.yml",
     ".github/workflows/schedule.yml",

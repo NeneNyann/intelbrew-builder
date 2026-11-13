@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from .common import (
+    CORE_STAGING,
     Failure,
     config,
     formula_path,
@@ -139,11 +140,10 @@ def files(path: Path, ref: str) -> dict[str, bytes]:
     return result
 
 
-def preserve(path: str, current: bytes, upstream: dict[str, bytes], cfg: dict) -> bytes:
+def preserve(path: str, current: bytes, upstream: dict[str, bytes], cfg: dict) -> bytes | None:
     target = upstream.get(path)
-    require(
-        target is not None and recipe_sha(current) == recipe_sha(target), "Formula inputs changed"
-    )
+    if target is None or recipe_sha(current) != recipe_sha(target):
+        return None
     official_block = BOTTLE_BLOCK.search(target)
     if official_block and re.search(
         rb'\b(?:all|sequoia|sonoma|ventura|monterey|big_sur):\s*"[a-f0-9]{64}"',
@@ -167,10 +167,8 @@ def preserve(path: str, current: bytes, upstream: dict[str, bytes], cfg: dict) -
     )
     for node in package_plan(manifest, formula):
         content = upstream.get(formula_path(node["name"]))
-        require(
-            content is not None and recipe_sha(content) == node["recipe_sha256"],
-            "Dependency inputs changed: " + node["name"],
-        )
+        if content is None or recipe_sha(content) != node["recipe_sha256"]:
+            return None
     return replace_bottle_block(target, block.group())
 
 
@@ -179,7 +177,10 @@ def prepare(path: Path) -> None:
     cfg = config()
     path = workspace(path)
     require(not path.exists(), "Synchronization workspace must be new")
-    base = sha(api(f"repos/{cfg['core_repository']}/git/ref/heads/main")["object"]["sha"], git=True)
+    base = sha(
+        api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"]["sha"],
+        git=True,
+    )
     upstream = sha(
         api("repos/Homebrew/homebrew-core/git/ref/heads/main")["object"]["sha"], git=True
     )
@@ -222,13 +223,14 @@ def prepare(path: Path) -> None:
         block = BOTTLE_BLOCK.search(content)
         if block is None or prefix not in block.group():
             continue
-        try:
-            updates[filename] = preserve(filename, content, official, cfg)
-        except (Failure, OSError, ValueError, KeyError, TypeError) as error:
+        retained = preserve(filename, content, official, cfg)
+        if retained is None:
             formula = name(filename.rsplit("/", 1)[-1].removesuffix(".rb"))
             if filename in official:
                 stale.append(formula)
-            summary(f"{formula}: bottle metadata removed. Reason: {error}")
+            summary(f"{formula}: formula or dependency inputs changed.")
+        else:
+            updates[filename] = retained
 
     env = dict(
         os.environ,
@@ -290,7 +292,8 @@ def publish(path: Path) -> None:
     base, commit, upstream = [sha(state[key], git=True) for key in ("base", "commit", "upstream")]
     ancestor = sha(state["ancestor"], git=True)
     current = sha(
-        api(f"repos/{cfg['core_repository']}/git/ref/heads/main")["object"]["sha"], git=True
+        api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"]["sha"],
+        git=True,
     )
     require(current == base, "Core advanced during synchronization; retry the workflow")
 
@@ -308,7 +311,9 @@ def publish(path: Path) -> None:
         git(path, "merge-base", "--is-ancestor", upstream, commit)
 
         def push():
-            current = api(f"repos/{cfg['core_repository']}/git/ref/heads/main")["object"]["sha"]
+            current = api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"][
+                "sha"
+            ]
             if current == commit:
                 return
             require(current == base, "Core advanced during synchronization; refusing overwrite")
@@ -326,9 +331,9 @@ def publish(path: Path) -> None:
                     "--git-dir",
                     str(path),
                     "push",
-                    f"--force-with-lease=refs/heads/main:{base}",
+                    f"--force-with-lease=refs/heads/{CORE_STAGING}:{base}",
                     "origin",
-                    commit + ":refs/heads/main",
+                    f"{commit}:refs/heads/{CORE_STAGING}",
                 ],
                 capture=False,
             )
@@ -341,7 +346,8 @@ def publish(path: Path) -> None:
         )
 
     actual = sha(
-        api(f"repos/{cfg['core_repository']}/git/ref/heads/main")["object"]["sha"], git=True
+        api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"]["sha"],
+        git=True,
     )
     require(actual == commit, "Core changed after synchronization")
     outputs(

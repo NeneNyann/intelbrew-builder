@@ -30,6 +30,7 @@ env:
   BREW_COMMIT: ${{ inputs.brew_commit }}
   CORE_COMMIT: ${{ inputs.core_commit }}
   ROOT_FORMULA: ${{ inputs.root }}
+  TRANSFER_TAG: ${{ inputs.tag }}
   HOMEBREW_NO_INSTALL_FROM_API: "1"
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -41,6 +42,7 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
+      actions: read
     outputs:
       manifest_sha256: ${{ steps.verify.outputs.manifest_sha256 }}
     steps:
@@ -51,7 +53,6 @@ jobs:
       - name: Download candidate release
         env:
           GH_TOKEN: ${{ github.token }}
-          TRANSFER_TAG: ${{ inputs.tag }}
           CANDIDATE_SHA256: ${{ inputs.manifest_sha256 }}
         run: >-
           /usr/bin/python3 -m bottles.transfer download
@@ -84,7 +85,6 @@ jobs:
       - name: Download candidate release
         env:
           GH_TOKEN: ${{ github.token }}
-          TRANSFER_TAG: ${{ inputs.tag }}
           CANDIDATE_SHA256: ${{ inputs.manifest_sha256 }}
         run: >-
           python3 -m bottles.transfer download

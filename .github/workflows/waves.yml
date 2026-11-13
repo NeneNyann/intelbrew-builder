@@ -46,17 +46,20 @@ jobs:
       actions: read
       attestations: read
     outputs:
+      candidates: ${{ steps.select.outputs.candidates }}
       formulae: ${{ steps.select.outputs.formulae }}
       has_work: ${{ steps.select.outputs.has_work }}
       build_llvm: ${{ steps.select.outputs.build_llvm }}
       parallelism: ${{ steps.select.outputs.parallelism }}
-      llvm_checkpoint: ${{ steps.resolve.outputs.llvm_checkpoint }}
-      llvm_checkpoint_sha256: ${{ steps.resolve.outputs.llvm_checkpoint_sha256 }}
-      llvm_core_commit: ${{ steps.resolve.outputs.llvm_core_commit }}
+      llvm_checkpoint: ${{ steps.select.outputs.llvm_checkpoint }}
+      llvm_checkpoint_sha256: ${{ steps.select.outputs.llvm_checkpoint_sha256 }}
+      llvm_core_commit: ${{ steps.select.outputs.llvm_core_commit }}
+      has_candidates: ${{ steps.select.outputs.has_candidates }}
       brew_commit: ${{ steps.resolve.outputs.brew_commit }}
       core_commit: ${{ steps.resolve.outputs.core_commit }}
       plan_tag: ${{ steps.upload.outputs.plan_tag }}
       plan_sha256: ${{ steps.upload.outputs.plan_sha256 }}
+      full_coverage: ${{ steps.select.outputs.full_coverage }}
     env:
       BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
     steps:
@@ -126,9 +129,32 @@ jobs:
     secrets:
       CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
 
+  resume:
+    needs: select
+    if: needs.select.outputs.has_candidates == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        candidate: ${{ fromJSON(needs.select.outputs.candidates) }}
+    uses: ./.github/workflows/root.yml
+    with:
+      root: ${{ matrix.candidate.root }}
+      brew_commit: ${{ needs.select.outputs.brew_commit }}
+      core_commit: ${{ matrix.candidate.core_commit }}
+      tag: ${{ matrix.candidate.tag }}
+      manifest_sha256: ${{ matrix.candidate.sha256 }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    secrets:
+      CORE_TOKEN: ${{ secrets.CORE_TOKEN }}
+
   finish:
     name: Continue bottle session
-    needs: [select, pipeline, llvm]
+    needs: [select, pipeline, llvm, resume]
     if: ${{ !cancelled() && needs.select.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -146,11 +172,24 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Report results and schedule the next wave
+        id: finish
         run: python3 -m bottles.waves finish
+      - name: Publish the fully covered Core snapshot
+        if: needs.select.outputs.full_coverage == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CORE_TOKEN }}
+          AUDITED_CORE: ${{ needs.select.outputs.core_commit }}
+          AUDITED_BREW: ${{ needs.select.outputs.brew_commit }}
+        run: python3 -m bottles.staging promote
+      - name: Clean completed wave releases
+        if: steps.finish.outputs.complete == 'true'
+        env:
+          WAVE_ORIGIN: ${{ steps.finish.outputs.origin }}
+        run: python3 -m bottles.waves cleanup
 
   cleanup:
     name: Clean temporary releases
-    needs: [select, pipeline, llvm, finish]
+    needs: [select, pipeline, llvm, resume, finish]
     if: ${{ !cancelled() && needs.select.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -166,6 +205,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Delete temporary candidates
+        env:
+          RESUMED_CANDIDATES: ${{ needs.select.outputs.candidates }}
         run: python3 -m bottles.transfer cleanup
       - name: Clean LLVM checkpoints
         env:

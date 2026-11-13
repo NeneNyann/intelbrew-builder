@@ -18,8 +18,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: core-initialization
+  group: bottle-waves-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   initialize:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -31,8 +32,6 @@ def identity(manifest: dict) -> str:
     cfg = config()
     require(
         manifest["root"] == name(os.environ["ROOT_FORMULA"])
-        and manifest["run_id"] == os.environ["GITHUB_RUN_ID"]
-        and int(manifest["run_attempt"]) <= int(os.environ["GITHUB_RUN_ATTEMPT"])
         and manifest["workflow_commit"] == os.environ["GITHUB_SHA"]
         and manifest["brew_commit"] == cfg["brew_commit"]
         and manifest["core_commit"] == cfg["core_commit"],
@@ -88,6 +87,11 @@ def upload_temporary(tag: str, commit: str, files: list[Path], body: str = "") -
 
 def upload(directory: Path) -> None:
     manifest = validate(directory, verified=False)
+    require(
+        manifest["run_id"] == os.environ["GITHUB_RUN_ID"]
+        and manifest["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"],
+        "Wrong candidate upload run",
+    )
     tag = identity(manifest)
     upload_temporary(tag, manifest["workflow_commit"], sorted(directory.iterdir()))
     outputs(tag=tag, manifest_sha256=digest(directory / "manifest.json"))
@@ -97,14 +101,20 @@ def download(directory: Path) -> None:
     tag = filename(os.environ["TRANSFER_TAG"])
     match = TAG.fullmatch(tag)
     require(
-        match is not None
-        and match[1] == os.environ["GITHUB_RUN_ID"]
-        and int(match[2]) <= int(os.environ["GITHUB_RUN_ATTEMPT"])
-        and match[3] == name(os.environ["ROOT_FORMULA"]),
+        match is not None and match[3] == name(os.environ["ROOT_FORMULA"]),
         "Unexpected transfer tag",
     )
     require(not directory.exists(), "Transfer directory must be new")
     repository = config()["builder_repository"]
+    source = api(f"repos/{repository}/actions/runs/{match[1]}")
+    require(
+        source["path"] in BOTTLE_WORKFLOWS
+        and source["head_branch"] == "main"
+        and source["head_repository"]["full_name"] == repository
+        and source["head_sha"] == os.environ["GITHUB_SHA"]
+        and int(match[2]) <= source["run_attempt"],
+        "Untrusted candidate build run",
+    )
     release = api(f"repos/{repository}/releases/tags/{tag}")
     require(
         release["prerelease"] is True
@@ -140,6 +150,8 @@ def cleanup() -> None:
     repository = config()["builder_repository"]
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     runs, jobs = {}, {}
+    current_run = os.environ["GITHUB_RUN_ID"]
+    resumed = {item["tag"] for item in json.loads(os.environ.get("RESUMED_CANDIDATES") or "[]")}
     for release in pages(f"repos/{repository}/releases"):
         tag = release["tag_name"]
         match = TAG.fullmatch(tag)
@@ -149,7 +161,7 @@ def cleanup() -> None:
         name(root)
         timestamp = release.get("published_at") or release["created_at"]
         created = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        current = run_id == os.environ["GITHUB_RUN_ID"]
+        current = run_id == current_run or tag in resumed
         if not current and created >= cutoff:
             continue
         if run_id not in runs:
@@ -163,17 +175,17 @@ def cleanup() -> None:
             and source["head_sha"] == release["target_commitish"],
             "Unexpected temporary Release provenance",
         )
-        if current:
-            if run_id not in jobs:
-                jobs[run_id] = pages(
-                    f"repos/{repository}/actions/runs/{run_id}/jobs?filter=latest", key="jobs"
-                )
-            if not any(
-                job["name"].endswith(f"publish ({root})") and job["conclusion"] == "success"
-                for job in jobs[run_id]
-            ):
-                continue
-        elif source["status"] != "completed":
+        if not current and source["status"] != "completed":
+            continue
+        proof_run = current_run if current else run_id
+        if proof_run not in jobs:
+            jobs[proof_run] = pages(
+                f"repos/{repository}/actions/runs/{proof_run}/jobs?filter=latest", key="jobs"
+            )
+        if not any(
+            job["name"].endswith(f"publish ({root})") and job["conclusion"] == "success"
+            for job in jobs[proof_run]
+        ):
             continue
         tag_ref = optional(f"repos/{repository}/git/ref/tags/{tag}")
         require(

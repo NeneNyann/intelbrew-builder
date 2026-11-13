@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .common import (
     BOTTLE_WORKFLOWS,
+    CORE_STAGING,
     MAX_JSON,
     Failure,
     config,
@@ -77,7 +78,7 @@ def validate(state: dict) -> dict:
             "Invalid wave formula list",
         )
     require(
-        bool(state["roots"]) and len(state["roots"]) <= 256 and len(state["ready"]) <= 256,
+        len(state["roots"]) <= 256 and len(state["ready"]) <= 256,
         "Wave exceeds the GitHub matrix limit",
     )
     require(
@@ -233,16 +234,11 @@ def resolve(path: Path) -> None:
         pending=0,
     )
     state["core_commit"] = sha(
-        api(f"repos/{cfg['core_repository']}/git/ref/heads/main")["object"]["sha"], git=True
+        api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"]["sha"],
+        git=True,
     )
     save(path, state)
     outputs(brew_commit=state["brew_commit"], core_commit=state["core_commit"])
-    llvm = state["llvm_checkpoint"] or {}
-    outputs(
-        llvm_checkpoint=llvm.get("tag", ""),
-        llvm_checkpoint_sha256=llvm.get("sha256", ""),
-        llvm_core_commit=llvm.get("core_commit", ""),
-    )
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as stream:
         for key, value in (
             ("BREW_COMMIT", state["brew_commit"]),
@@ -340,7 +336,8 @@ def finish() -> None:
     continuing_llvm = llvm is not None and llvm["tag"].startswith(
         f"llvm-stage-{state['source_run']}-"
     )
-    if (state["pending"] or continuing_llvm) and state["ready"]:
+    full_batch = set(state["roots"]) == set(config()["targets"])
+    if (state["pending"] or continuing_llvm or (full_batch and not errors)) and state["ready"]:
         repository = config()["builder_repository"]
         title = "Bottle wave " + tag
 
@@ -363,14 +360,15 @@ def finish() -> None:
         retry(dispatch)
         cleanup(state["origin_run"], False)
     else:
-        summary("Bottle session finished.")
-        cleanup(state["origin_run"], not errors)
+        require(state["pending"] == 0, "Bottle session has unresolved dependencies")
         require(not errors, "Bottle session contains failed or blocked formulae")
+        summary("Bottle session finished.")
+        outputs(complete="true", origin=state["origin_run"])
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["resolve", "upload", "finish"])
+    parser.add_argument("command", choices=["resolve", "upload", "finish", "cleanup"])
     parser.add_argument("--state", type=Path)
     args = parser.parse_args()
     try:
@@ -382,6 +380,10 @@ def main() -> int:
         )
         if args.command == "finish":
             finish()
+        elif args.command == "cleanup":
+            origin = os.environ["WAVE_ORIGIN"]
+            require(re.fullmatch(r"[1-9][0-9]*", origin) is not None, "Invalid wave origin")
+            cleanup(origin, True)
         else:
             require(args.state is not None, "Wave state path is required")
             if args.command == "resolve":

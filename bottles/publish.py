@@ -11,6 +11,7 @@ from urllib.parse import quote
 from .artifacts import checksums, validate
 from .common import (
     BOTTLE_WORKFLOWS,
+    CORE_STAGING,
     Failure,
     config,
     digest,
@@ -26,6 +27,7 @@ from .common import (
 from .github import BOT, api, attest, optional, pages, retry
 from .metadata import BOTTLE_BLOCK, bottle_json, overlay, recipe_sha, release_tag
 from .network import verify_public
+from .sync import contains
 
 
 def prepare(candidate: Path, output: Path) -> None:
@@ -61,7 +63,7 @@ def _read_core_file(repository: str, path: str, ref: str) -> bytes:
 
 def core_snapshot(manifest: dict) -> tuple[str, dict[str, bytes]]:
     repository = config()["core_repository"]
-    head = api(f"repos/{repository}/git/ref/heads/main")
+    head = api(f"repos/{repository}/git/ref/heads/{CORE_STAGING}")
     base = sha(head["object"]["sha"], git=True)
     current = {}
     for node in manifest["plan"]:
@@ -192,7 +194,8 @@ def release(item: dict, directory: Path, base: str, manifest: dict) -> None:
     tag_ref = optional(f"repos/{repository}/git/ref/tags/{tag}")
     if tag_ref is None:
         require(
-            existing.get("draft") is True and existing.get("target_commitish") == base,
+            existing.get("draft") is True
+            and contains(repository, base, sha(existing.get("target_commitish"), git=True)),
             "Draft target changed",
         )
     else:
@@ -277,7 +280,7 @@ def pull_request(
     updates = metadata_updates(manifest, originals, candidate)
     root_record = next(item for item in manifest["plan"] if item["name"] == manifest["root"])
     title = publication_title(manifest)
-    branch = "bottles/" + release_tag(
+    branch = "staged-bottles/" + release_tag(
         root_record,
         {
             "brew_commit": manifest["brew_commit"],
@@ -309,7 +312,7 @@ def pull_request(
     )
     owner = repository.split("/")[0]
     previous = api(
-        f"repos/{repository}/pulls?state=all&head={quote(owner + ':' + branch, safe='')}&base=main"
+        f"repos/{repository}/pulls?state=all&head={quote(owner + ':' + branch, safe='')}&base={CORE_STAGING}"
     )
     if previous:
         require(
@@ -331,7 +334,7 @@ def pull_request(
         payload={
             "title": title,
             "head": branch,
-            "base": "main",
+            "base": CORE_STAGING,
             "body": body,
         },
     )
@@ -343,13 +346,13 @@ def merge_pull_request(
 ) -> str:
     cfg = config()
     repository = cfg["core_repository"]
-    reference = f"repos/{repository}/git/refs/heads/main"
+    reference = f"repos/{repository}/git/refs/heads/{CORE_STAGING}"
     pr = api(f"repos/{repository}/pulls/{number}")
     require(
         pr["head"]["sha"] == head
         and pr["head"]["repo"]["full_name"] == repository
         and pr["base"]["repo"]["full_name"] == repository
-        and pr["base"]["ref"] == "main",
+        and pr["base"]["ref"] == CORE_STAGING,
         "Core PR identity changed",
     )
     require(
@@ -418,7 +421,7 @@ def merge_pull_request(
         try:
             api(reference, method="PATCH", payload={"sha": commit, "force": False})
         except Failure:
-            latest = api(f"repos/{repository}/git/ref/heads/main")["object"]["sha"]
+            latest = api(f"repos/{repository}/git/ref/heads/{CORE_STAGING}")["object"]["sha"]
             if latest != base and attempt < 4:
                 continue
             raise
@@ -432,8 +435,8 @@ def publish(candidate: Path, releases: Path) -> None:
     manifest = validate(candidate, verified=True)
     require(
         manifest["workflow_commit"] == os.environ["GITHUB_SHA"]
-        and manifest["run_id"] == os.environ["GITHUB_RUN_ID"]
-        and int(manifest["run_attempt"]) <= int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        and os.environ["TRANSFER_TAG"]
+        == f"candidate-{manifest['run_id']}-{manifest['run_attempt']}-{manifest['root']}",
         "Candidate workflow identity mismatch",
     )
     read_token = os.environ.get("ATTESTATION_TOKEN")
@@ -449,8 +452,7 @@ def publish(candidate: Path, releases: Path) -> None:
         "Untrusted source workflow run",
     )
     jobs = pages(
-        f"repos/{cfg['builder_repository']}/actions/runs/{manifest['run_id']}/"
-        f"attempts/{manifest['run_attempt']}/jobs",
+        f"repos/{cfg['builder_repository']}/actions/runs/{os.environ['GITHUB_RUN_ID']}/jobs?filter=latest",
         key="jobs",
         token=read_token,
     )
@@ -460,7 +462,7 @@ def publish(candidate: Path, releases: Path) -> None:
             and job.get("conclusion") == "success"
             for job in jobs
         ),
-        "No successful independent verification in candidate's source attempt",
+        "No successful independent verification in this workflow run",
     )
     require(
         manifest["brew_commit"] == cfg["brew_commit"]

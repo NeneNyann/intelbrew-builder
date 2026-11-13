@@ -32,14 +32,16 @@ jobs:
     name: Select formulae
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
+    concurrency:
+      group: bottle-waves-${{ github.ref }}
+      queue: max
     timeout-minutes: 10
     permissions:
       contents: read
     outputs:
       formulae: ${{ steps.select.outputs.formulae }}
-      has_work: ${{ steps.select.outputs.has_work }}
-      brew_commit: ${{ steps.snapshot.outputs.brew_commit }}
-      core_commit: ${{ steps.snapshot.outputs.core_commit }}
+      brew_commit: ${{ inputs.brew_commit || steps.staging.outputs.brew_commit }}
+      core_commit: ${{ inputs.core_commit || steps.staging.outputs.core_commit }}
     env:
       BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
     steps:
@@ -54,6 +56,14 @@ jobs:
           REQUESTED_BREW_COMMIT: ${{ inputs.brew_commit }}
           REQUESTED_CORE_COMMIT: ${{ inputs.core_commit }}
         run: python3 -m bottles.resolve --build
+      - name: Open or resume the Core candidate
+        if: inputs.core_commit == ''
+        id: staging
+        env:
+          GH_TOKEN: ${{ secrets.CORE_TOKEN }}
+        run: |
+          python3 -m bottles.staging prepare
+          python3 -m bottles.staging pin
       - name: Select requested Core formulae
         id: select
         env:
@@ -62,7 +72,6 @@ jobs:
 
   pipeline:
     needs: select
-    if: needs.select.outputs.has_work == 'true'
     uses: ./.github/workflows/waves.yml
     with:
       formulae: ${{ needs.select.outputs.formulae }}

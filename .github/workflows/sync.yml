@@ -14,6 +14,8 @@ on:
       CORE_TOKEN:
         required: true
     outputs:
+      brew_commit:
+        value: ${{ jobs.sync.outputs.brew_commit }}
       core_commit:
         value: ${{ jobs.sync.outputs.core_commit }}
       stale_formulae:
@@ -34,7 +36,8 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     outputs:
-      core_commit: ${{ steps.publish.outputs.core_commit }}
+      brew_commit: ${{ steps.pin.outputs.brew_commit }}
+      core_commit: ${{ steps.publish.outputs.core_commit || steps.staging.outputs.core_commit }}
       stale_formulae: ${{ steps.publish.outputs.stale_formulae }}
     env:
       BOTTLE_CONFIG: ${{ vars.BOTTLE_CONFIG }}
@@ -48,13 +51,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -m bottles.resolve
+      - name: Open or resume the Core candidate
+        id: staging
+        env:
+          GH_TOKEN: ${{ secrets.CORE_TOKEN }}
+        run: python3 -m bottles.staging prepare
       - name: Prepare upstream changes and bottle metadata
+        if: steps.staging.outputs.pending == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           ATTESTATION_TOKEN: ${{ github.token }}
         run: python3 -m bottles.sync prepare --workspace "$RUNNER_TEMP/core-sync.git"
       - id: publish
-        name: Update Core
+        name: Update Core staging
+        if: steps.staging.outputs.pending == 'false'
         env:
           GH_TOKEN: ${{ secrets.CORE_TOKEN }}
         run: python3 -m bottles.sync publish --workspace "$RUNNER_TEMP/core-sync.git"
+      - name: Pin Homebrew for the candidate
+        id: pin
+        env:
+          GH_TOKEN: ${{ secrets.CORE_TOKEN }}
+        run: python3 -m bottles.staging pin

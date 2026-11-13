@@ -414,8 +414,8 @@ def seal(candidate: Path) -> None:
     require(
         manifest["root"] == name(os.environ["ROOT_FORMULA"])
         and manifest["workflow_commit"] == os.environ["GITHUB_SHA"]
-        and manifest["run_id"] == os.environ["GITHUB_RUN_ID"]
-        and int(manifest["run_attempt"]) <= int(os.environ["GITHUB_RUN_ATTEMPT"])
+        and os.environ["TRANSFER_TAG"]
+        == f"candidate-{manifest['run_id']}-{manifest['run_attempt']}-{manifest['root']}"
         and manifest["brew_commit"] == cfg["brew_commit"]
         and manifest["core_commit"] == cfg["core_commit"],
         "Candidate workflow identity mismatch",

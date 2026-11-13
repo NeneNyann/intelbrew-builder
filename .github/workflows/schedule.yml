@@ -53,7 +53,7 @@ jobs:
     needs: [snapshot, sync]
     uses: ./.github/workflows/bottles.yml
     with:
-      brew_commit: ${{ needs.snapshot.outputs.brew_commit }}
+      brew_commit: ${{ needs.sync.outputs.brew_commit }}
       core_commit: ${{ needs.sync.outputs.core_commit }}
     permissions:
       contents: write
