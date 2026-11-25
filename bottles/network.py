@@ -79,6 +79,8 @@ def transient(error: Exception) -> bool:
             r"|broken pipe|timed? out|timeout|unexpected (?:disconnect|eof)|\beof\b"
             r"|execution expired|failed to open tcp connection"
             r"|remote end hung up|gnutls_recv|tls handshake|tls connection.*terminated"
+            r"|shallow file (?:has changed since we read it|was changed during fetch)"
+            r"|no valid sigstore verifiers could be initialized"
             r"|curl[: ]+\(?\s*(?:5|6|7|18|28|35|52|55|56|92)\b|\beconnreset\b",
             message,
         )
@@ -125,7 +127,7 @@ def retry(operation, *, attempts: int = 5):
             delay = retry_delay(error, attempt)
         finally:
             RETRYING.reset(token)
-        print(f"Network request failed; retry {attempt + 2}/{attempts} in {delay:g}s.", flush=True)
+        print(f"Temporary failure; retry {attempt + 2}/{attempts} in {delay:g}s.", flush=True)
         time.sleep(delay)
 
 

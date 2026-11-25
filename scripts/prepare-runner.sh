@@ -144,6 +144,10 @@ verify_checkouts() {
 }
 
 prepare_commands() {
+  # Older Homebrew creates this before the post-install sandbox starts.
+  if [[ ! -d /usr/local/libexec ]]; then
+    sudo /usr/bin/install -d -o "$(id -u)" -g "$(id -g)" /usr/local/libexec
+  fi
   echo /usr/bin >> "${GITHUB_PATH:?}"
   network_brew install-bundler-gems --add-groups=bottle,formula_test
   network_brew config

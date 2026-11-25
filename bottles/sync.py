@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .common import (
@@ -26,6 +27,7 @@ from .github import BOT, api, optional, retry
 from .initialize import UPSTREAM, outputs, workspace
 from .metadata import BOTTLE_BLOCK, recipe_sha, replace_bottle_block
 from .published import package_plan, published_manifest
+from .staging import head
 
 
 def git(
@@ -95,7 +97,15 @@ def fetch_history(path: Path, base: str, upstream: str) -> str:
             ("origin", base, "base"),
             ("upstream", upstream, "upstream"),
         ):
-            git(path, "fetch", "--no-tags", f"--depth={depth}", remote, f"{commit}:refs/sync/{ref}")
+            git(
+                path,
+                "fetch",
+                "--no-auto-maintenance",
+                "--no-tags",
+                f"--depth={depth}",
+                remote,
+                f"{commit}:refs/sync/{ref}",
+            )
         ancestor = git(path, "merge-base", base, upstream, missing_ok=True).decode().strip()
         if ancestor:
             ancestor = sha(ancestor, git=True)
@@ -177,10 +187,7 @@ def prepare(path: Path) -> None:
     cfg = config()
     path = workspace(path)
     require(not path.exists(), "Synchronization workspace must be new")
-    base = sha(
-        api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"]["sha"],
-        git=True,
-    )
+    base = head(cfg["core_repository"], CORE_STAGING)
     upstream = sha(
         api("repos/Homebrew/homebrew-core/git/ref/heads/main")["object"]["sha"], git=True
     )
@@ -280,6 +287,17 @@ def prepare(path: Path) -> None:
     summary(f"Core synchronization prepared: {upstream}")
 
 
+def confirm_staging(repository: str, base: str, commit: str) -> None:
+    for delay in (1, 2, 4, 8, 0):
+        actual = head(repository, CORE_STAGING)
+        if actual == commit:
+            return
+        require(actual == base, f"Core staging moved to {actual}; expected {commit}")
+        require(delay > 0, f"Core staging still reports {actual} after pushing {commit}")
+        summary(f"Core staging still reports {base}; checking for {commit} again in {delay}s.")
+        time.sleep(delay)
+
+
 def publish(path: Path) -> None:
     hosted(trusted=True)
     cfg = config()
@@ -291,11 +309,12 @@ def publish(path: Path) -> None:
     )
     base, commit, upstream = [sha(state[key], git=True) for key in ("base", "commit", "upstream")]
     ancestor = sha(state["ancestor"], git=True)
-    current = sha(
-        api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"]["sha"],
-        git=True,
+    repository = cfg["core_repository"]
+    current = head(repository, CORE_STAGING)
+    require(
+        current in {base, commit},
+        f"Core staging moved to {current}; expected {base} or {commit}",
     )
-    require(current == base, "Core advanced during synchronization; retry the workflow")
 
     if commit != base:
         parents = git(path, "rev-list", "--parents", "-n", "1", commit).decode().split()[1:]
@@ -311,12 +330,10 @@ def publish(path: Path) -> None:
         git(path, "merge-base", "--is-ancestor", upstream, commit)
 
         def push():
-            current = api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"][
-                "sha"
-            ]
+            current = head(repository, CORE_STAGING)
             if current == commit:
                 return
-            require(current == base, "Core advanced during synchronization; refusing overwrite")
+            require(current == base, f"Core staging moved to {current}; refusing to replace it")
             run(
                 [
                     "git",
@@ -338,23 +355,20 @@ def publish(path: Path) -> None:
                 capture=False,
             )
 
-        retry(push)
+        if current != commit:
+            retry(push)
     else:
         require(
-            contains(cfg["core_repository"], base, upstream),
+            contains(repository, base, upstream),
             "Core does not contain the selected upstream commit",
         )
 
-    actual = sha(
-        api(f"repos/{cfg['core_repository']}/git/ref/heads/{CORE_STAGING}")["object"]["sha"],
-        git=True,
-    )
-    require(actual == commit, "Core changed after synchronization")
+    confirm_staging(repository, base, commit)
     outputs(
         core_commit=commit,
         stale_formulae=json.dumps(state["stale_formulae"], separators=(",", ":")),
     )
-    summary(f"Core commit: https://github.com/{cfg['core_repository']}/commit/{commit}")
+    summary(f"Core commit: https://github.com/{repository}/commit/{commit}")
 
 
 def main() -> int:

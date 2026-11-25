@@ -47,8 +47,12 @@ def prepare(repository: str) -> None:
             else:
                 require(comparison["status"] == "ahead", "Core main and staging have diverged")
     pinned = optional(f"repos/{repository}/git/ref/heads/{INPUT_BRANCH}")
-    outputs(core_commit=candidate, pending=str(candidate != main or pinned is not None).lower())
+    pinned_base, _ = pinned_inputs(repository, pinned) if pinned else (None, None)
+    pending = candidate != main or pinned_base == main
+    outputs(core_commit=candidate, pending=str(pending).lower())
     summary(f"Core staging snapshot: {candidate}")
+    if pending:
+        summary("Resuming the existing Core candidate before importing newer upstream changes.")
 
 
 def pin(repository: str, brew_commit: str) -> None:
@@ -57,6 +61,7 @@ def pin(repository: str, brew_commit: str) -> None:
     pinned_base, pinned_brew = pinned_inputs(repository, pinned) if pinned else (None, None)
     if pinned_base == main:
         brew_commit = pinned_brew
+        summary(f"Reusing the candidate's pinned Homebrew commit: {brew_commit}")
     else:
         tree = api(f"repos/{repository}/git/commits/{main}")["tree"]["sha"]
         record = api(
